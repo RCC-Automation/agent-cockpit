@@ -333,7 +333,8 @@ function renderHead() {
   els.head.append(...[
     h('span', { class: 'cs', text: a.name, title: 'Click to rename', onclick: () => { const n = prompt('Agent name', a.name); if (n && n.trim()) api('POST', `/api/agents/${a.id}/settings`, { name: n.trim() }).catch(x => toast(x.message)); } }),
     pill(a.status),
-    h('span', { class: 'meta', text: [sub, a.modelResolved || a.model || 'default model', a.cost ? '$' + a.cost.toFixed(2) : null].filter(Boolean).join(' · '), title: a.cwd }),
+    h('span', { class: 'meta', text: [sub, a.modelResolved || a.model || 'default model', a.login && !a.login.api ? a.login.label : null].filter(Boolean).join(' · '), title: a.cwd }),
+    a.login && a.login.api ? h('span', { class: 'pill s-failed', text: a.login.label, title: 'This agent is not using your Claude subscription' }) : null,
     mode,
     a.ctx != null ? h('button', { class: 'chip' + lvl(a.ctx), type: 'button', 'aria-expanded': String(S.ctxOpen), title: 'Show what fills the context', onclick: toggleCtx }, `Context ${a.ctx}%`, meter(a.ctx)) : null,
     a.status === 'review' ? h('button', { class: 'btn sm', type: 'button', text: 'Mark done', onclick: () => api('POST', `/api/agents/${a.id}/settings`, { status: 'idle' }).catch(x => toast(x.message)) }) : null,

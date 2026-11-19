@@ -21,6 +21,26 @@ const IDLE_CLOSE_MS = Number(process.env.COCKPIT_IDLE_MINUTES || 20) * 60_000;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_BODY = 30 * 1024 * 1024;
 const MAX_RESULT_CHARS = 6000;
+// Agents run on the Claude login of this PC (your subscription). An API key in the
+// environment would silently switch them to pay-per-use billing, so it is not passed on
+// unless you ask for it with COCKPIT_ALLOW_API_KEY=1.
+const ALLOW_API_KEY = process.env.COCKPIT_ALLOW_API_KEY === '1';
+const LOGIN_HINT = 'This PC is not logged in to Claude. Open a terminal, run "claude", log in with your subscription, then send the message again.';
+
+function agentEnv() {
+  const env = { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'agent-cockpit/0.1.0' };
+  if (!ALLOW_API_KEY) { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; }
+  return env;
+}
+// Turn what the engine reports about its login into one plain label.
+function describeLogin(info) {
+  if (!info) return null;
+  const src = info.apiKeySource || '';
+  const provider = info.apiProvider && info.apiProvider !== 'firstParty' ? info.apiProvider : '';
+  if (provider) return { label: `via ${provider}`, api: true };
+  if (src && src !== 'none' && src !== 'oauth') return { label: `API key (${src})`, api: true };
+  return { label: info.subscriptionType ? `subscription · ${info.subscriptionType}` : 'Claude login', api: false };
+}
 
 if (!LOOPBACK.has(HOST) && !TOKEN) {
   console.error('Refusing to start: COCKPIT_HOST is not local, so COCKPIT_TOKEN must be set.\n' +
@@ -102,7 +122,7 @@ function publicAgent(a) {
   return {
     id: a.id, projectId: a.projectId, name: a.name, cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
-    cost: (a.cost || 0) + r.queryCost, ctx: r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
+    login: a.login || null, cost: (a.cost || 0) + r.queryCost, ctx: r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
 
@@ -258,6 +278,7 @@ function startQuery(a) {
   r.stopping = false;
   const options = {
     cwd: a.cwd,
+    env: agentEnv(),
     includePartialMessages: true,
     systemPrompt: { type: 'preset', preset: 'claude_code', append: teamBrief(a) },
     permissionMode: a.permissionMode || 'default',
@@ -307,6 +328,7 @@ function handleMessage(a, m) {
       a.commands = r.commands; saveRoster();
       broadcast({ t: 'commands', agentId: a.id, commands: r.commands });
       emitAgent(a);
+      checkLogin(a, m.apiKeySource);
     } else if (m.subtype === 'compact_boundary') {
       const c = m.compact_metadata || {};
       const k = n => n ? Math.round(n / 1000) + 'k' : '?';
@@ -341,7 +363,7 @@ function handleMessage(a, m) {
         a.last = `${b.name} ${sum}`;
       }
     }
-    if (m.error) note(a, 'Model error: ' + m.error);
+    if (m.error) note(a, m.error === 'authentication_failed' ? LOGIN_HINT : 'Model error: ' + m.error);
     touch(a, a.last);
     return;
   }
@@ -372,10 +394,23 @@ function handleMessage(a, m) {
       r.stopping = false; note(a, 'Stopped by you'); setStatus(a, 'idle', 'Stopped by you');
     } else {
       const why = (m.errors && m.errors.join('; ')) || m.result || m.subtype;
-      note(a, 'Turn failed: ' + why); setStatus(a, 'failed', 'Failed: ' + why);
+      note(a, 'Turn failed: ' + why);
+      if (/log ?in|authenticat|credential|api key|unauthori/i.test(String(why))) note(a, LOGIN_HINT);
+      setStatus(a, 'failed', 'Failed: ' + why);
     }
     armIdleClose(a);
   }
+}
+
+async function checkLogin(a, apiKeySource) {
+  const r = rt(a.id);
+  let info = { apiKeySource };
+  try { if (r.q) info = { apiKeySource, ...(await r.q.accountInfo()) }; } catch { /* older CLI */ }
+  const login = describeLogin(info);
+  if (!login) return;
+  const changed = !a.login || a.login.label !== login.label;
+  a.login = login; saveRoster(); emitAgent(a);
+  if (login.api && changed) note(a, `Attention: this agent is billed through ${login.label}, not through your Claude subscription.`);
 }
 
 async function refreshContext(a) {

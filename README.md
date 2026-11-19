@@ -32,13 +32,13 @@ Keep the window open while you use the cockpit. Agents keep running when you clo
 
 ## Login
 
-The cockpit starts agents through the Claude Agent SDK, which runs the same Claude Code engine you use in the terminal.
-If the first message fails with a login error, either log in once with `claude` in a terminal on this PC,
-or set an API key before starting:
+No API key is needed. The cockpit runs the same Claude Code engine you use in the terminal, and that engine
+uses the Claude login already stored on this PC, which is your subscription.
 
-```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
-```
+- If this PC is not logged in yet, run `claude` once in a terminal, log in, and send the message again.
+- The chat header shows which login an agent uses, for example `subscription · max`.
+- An `ANTHROPIC_API_KEY` in your environment is **not** passed to the agents, so they cannot switch to
+  pay-per-use billing by accident. Set `COCKPIT_ALLOW_API_KEY=1` only if you want that.
 
 To use your installed Claude Code instead of the bundled one, set `COCKPIT_CLAUDE_PATH` to its full path.
 
@@ -64,6 +64,7 @@ Set these before starting, as environment variables.
 | `COCKPIT_IDLE_MINUTES` | `20` | Close an idle agent process after this many minutes. `0` keeps them alive |
 | `COCKPIT_DATA` | `./data` | Where the roster is stored |
 | `COCKPIT_CLAUDE_PATH` | bundled | Path to a Claude Code executable to use instead of the bundled one |
+| `COCKPIT_ALLOW_API_KEY` | off | Set to `1` to let agents use an API key from the environment |
 | `COCKPIT_DEBUG` | off | Print the agents' diagnostic output in the server window |
 
 ## Safety
