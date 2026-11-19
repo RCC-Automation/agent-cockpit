@@ -517,9 +517,9 @@ function guard(req, res, url) {
   return false;
 }
 
-function uniqueName(want) {
+function uniqueName(want, projectId) {
   const base = (want || 'AGENT').trim().slice(0, 40) || 'AGENT';
-  const taken = new Set([...agents.values()].map(a => a.name.toLowerCase()));
+  const taken = new Set([...agents.values()].filter(a => a.projectId === projectId).map(a => a.name.toLowerCase()));
   if (!taken.has(base.toLowerCase())) return base;
   for (let i = 2; ; i++) if (!taken.has(`${base}_${i}`.toLowerCase())) return `${base}_${i}`;
 }
@@ -540,7 +540,7 @@ async function importNamed(proj) {
   for (const s of [...byName.values()].sort((x, y) => (y.lastModified || 0) - (x.lastModified || 0))) {
     let cwd = proj.cwd;
     try { if (s.cwd && fs.statSync(s.cwd).isDirectory()) cwd = path.resolve(s.cwd); } catch { /* keep the project folder */ }
-    const a = { id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(s.customTitle.trim()), cwd, model: '', permissionMode: 'default',
+    const a = { id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(s.customTitle.trim(), proj.id), cwd, model: '', permissionMode: 'default',
       sessionId: s.sessionId, createdAt: Date.now(), updatedAt: s.lastModified || Date.now(), cost: 0,
       last: 'Added from this folder. Close it in the terminal before you write to it here.' };
     agents.set(a.id, a); added.push(a); emitAgent(a);
@@ -623,7 +623,7 @@ const routes = {
       if (dup) return json(res, 200, { agent: publicAgent(dup), existing: true });
     }
     const a = {
-      id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(b.name), cwd, model: String(b.model || '').trim(),
+      id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(b.name, proj.id), cwd, model: String(b.model || '').trim(),
       permissionMode: ['default', 'acceptEdits', 'plan'].includes(b.permissionMode) ? b.permissionMode : 'default',
       sessionId: b.sessionId || null, createdAt: Date.now(), updatedAt: Date.now(), cost: 0,
       last: b.sessionId ? 'Resumed. Send a message to continue.' : 'Ready. Waiting for a task.',
@@ -680,7 +680,7 @@ const agentRoutes = {
   'POST settings': async (a, req, res) => {
     const b = await readBody(req);
     const r = rt(a.id);
-    if (typeof b.name === 'string' && b.name.trim() && b.name.trim() !== a.name) a.name = uniqueName(b.name);
+    if (typeof b.name === 'string' && b.name.trim() && b.name.trim() !== a.name) a.name = uniqueName(b.name, a.projectId);
     if (['default', 'acceptEdits', 'plan'].includes(b.permissionMode) && b.permissionMode !== a.permissionMode) {
       a.permissionMode = b.permissionMode;
       if (r.q) { try { await r.q.setPermissionMode(a.permissionMode); } catch { /* applies on next start */ } }
