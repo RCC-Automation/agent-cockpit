@@ -4,8 +4,12 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 
 - **Projects.** A project is a folder plus the team of agents that works in it.
 - **New agent.** Name it, pick a model and permission mode, launch. No terminal needed.
+- **Both at once.** An agent runs in its own PowerShell window, where you see every detail, and you talk to it in the
+  cockpit chat as well. A message you send in the cockpit is typed into the agent's window. This works for windows
+  the cockpit opened (New agent, Open terminal, Wake all). While the agent is busy, Claude Code queues the message.
 - **Live view of your terminals.** Named Claude Code sessions that run in a terminal in the project folder appear in
-  the roster by themselves. You see their chat and status live. The cockpit does not write to them.
+  the roster by themselves, with chat and status live. A window you opened yourself can be watched but not written
+  to; close it and use Open terminal to get both.
 - **Take over.** Close an agent in its terminal, click Take over, and it continues in the cockpit with its full history.
   Release hands it back to a terminal.
 - **Sessions.** Every earlier session of the folder can be watched or taken over.
@@ -21,7 +25,8 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Permissions.** Per agent or for a whole project in Settings: ask before edits and commands, accept edits, plan
   first, or allow everything. Allow everything means the agent runs any command and changes or deletes any file
   without asking. It starts Claude Code with `--dangerously-skip-permissions`. The first window that starts this way
-  shows Claude Code's own warning with "No, exit" preselected; choose "Yes, I accept" once and it is remembered.
+  would show Claude Code's own warning; the cockpit passes Claude Code the setting that records your acceptance, so
+  windows it opens start without that question.
 - **Artifacts and files.** An artifact an agent publishes, or a file it sends you, shows as a card in the chat. A click
   opens it next to the chat: pages, images, video, audio, PDF and text. Every image, page or document an agent read
   or wrote has a Preview button in its step.
@@ -91,8 +96,10 @@ To use your installed Claude Code instead of the bundled one, set `COCKPIT_CLAUD
 - A watched agent is read from the session file Claude Code keeps on disk. Its status is derived from that file:
   Working while it writes, Ready to review when it ended its turn, Needs you when it asked a question or has been
   quiet for 90 seconds in the middle of a tool call, which often means an approval is waiting in the terminal.
-- One session takes input from one place. An agent in a terminal window is written to in that window; an agent run by
-  the cockpit is written to in the cockpit. Take over and Open in terminal move an agent between the two.
+- The cockpit talks to an agent in a terminal window by typing into that window. To avoid answering a question by
+  accident, it does not type while the agent shows a question, or, unless the agent runs in allow-all mode, while it is
+  busy or may be asking for a permission. It tells you why and lets you type anyway.
+- Take over runs an agent inside the cockpit without a window; Open in terminal gives it a window again.
 - When you start a session again under the same name, or use `/clear`, the watched agent follows the newest session with that name.
 - Removing an agent or a project only removes it from the cockpit. Folders and session files are never deleted.
 
@@ -109,7 +116,7 @@ Set these before starting, as environment variables.
 | `COCKPIT_DATA` | `./data` | Where the roster is stored |
 | `COCKPIT_CLAUDE_PATH` | bundled | Path to a Claude Code executable to use instead of the bundled one |
 | `COCKPIT_CLAUDE_ARGS` | none | Extra arguments added to `claude` when the cockpit opens a terminal window |
-| `COCKPIT_TERMINAL` | window | Set to `wt` to open agents as tabs in Windows Terminal instead of separate windows |
+| `COCKPIT_TERMINAL` | window | `wt` opens agents as tabs in Windows Terminal (the cockpit then cannot type into them). On Linux and macOS, `tmux` runs each agent in a tmux session the cockpit can type into |
 | `COCKPIT_SHELL` | `powershell.exe` | The shell the terminal window runs, for example `pwsh.exe` |
 | `COCKPIT_IMPORT_DAYS` | `7` | Named sessions used within this many days are shown automatically |
 | `COCKPIT_ALLOW_API_KEY` | off | Set to `1` to let agents use an API key from the environment |

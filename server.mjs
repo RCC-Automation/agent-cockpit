@@ -131,7 +131,7 @@ function publicAgent(a) {
   const r = rt(a.id);
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
-    sessionId: a.sessionId || null, asleep: !wakeState(a), window: a.term && a.term.pid ? (a.term.alive === false ? 'closed' : 'open') : null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
+    sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
     interrupted: !!a.interrupted, login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
@@ -374,11 +374,12 @@ function readTail(file, size) {
 
 // What the session did last, read from the end of its file.
 function tailInfo(lines, cwd) {
-  let info = null, cost = null;
-  for (let i = lines.length - 1; i >= 0 && !(info && cost != null); i--) {
+  let info = null, cost = null, mode = null;
+  for (let i = lines.length - 1; i >= 0 && !(info && cost != null && mode != null); i--) {
     if (!lines[i]) continue;
     let o; try { o = JSON.parse(lines[i]); } catch { continue; }
     if (cost == null && o.type === 'cost-state' && typeof o.totalCostUSD === 'number') { cost = o.totalCostUSD; continue; }
+    if (mode == null && o.type === 'user' && typeof o.permissionMode === 'string') mode = o.permissionMode;
     if (info || o.isSidechain || o.isMeta || (o.type !== 'user' && o.type !== 'assistant')) continue;
     const c = o.message?.content;
     if (o.type === 'assistant') {
@@ -401,7 +402,7 @@ function tailInfo(lines, cwd) {
       else if (Array.isArray(c) && c.some(b => b.type === 'image')) info = { kind: 'user', text: '(image)' };
     }
   }
-  return { info, cost };
+  return { info, cost, mode };
 }
 
 function watchState(info, quiet) {
@@ -458,6 +459,7 @@ async function pollWatched(a) {
     const t = tailInfo(readTail(file, st.size), a.cwd);
     if (t.info) w.info = t.info;
     if (t.cost != null) w.cost = t.cost;
+    if (t.mode) w.mode = t.mode;
   }
   if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
   let s = watchState(w.info, Date.now() - w.mtime);
@@ -485,7 +487,8 @@ async function scanProjects() {
   if (scanBusy) return; scanBusy = true;
   try {
     for (const p of [...projects.values()]) {
-      if (p.autoImport === false) continue;
+      // Following an agent to its newest session always happens; only adding new agents can be switched off.
+      if (p.autoImport === false && ![...agents.values()].some(a => a.projectId === p.id && a.mode === 'watch')) continue;
       let list; try { list = await listSessions({ dir: p.cwd, limit: 500 }); } catch { continue; }
       const newest = new Map();
       for (const s of list) {
@@ -504,7 +507,7 @@ async function scanProjects() {
         r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 }; r.items = []; r.historyLoaded = false;
         saveRoster(); broadcast({ t: 'reset', agentId: a.id }); emitAgent(a);
       }
-      try { await importNamed(p, list); } catch { /* next scan */ }
+      if (p.autoImport !== false) { try { await importNamed(p, list); } catch { /* next scan */ } }
     }
   } finally { scanBusy = false; }
 }
@@ -516,6 +519,16 @@ async function scanProjects() {
 const psQuote = v => "'" + String(v).replace(/'/g, "''") + "'";
 const shQuote = v => "'" + String(v).replace(/'/g, `'\\''`) + "'";
 
+// Allow-all is confirmed once in the cockpit. This settings file tells Claude Code that the person has
+// accepted its own bypass-permissions warning, so each new window does not stop at that question.
+function allowAllSettingsFile() {
+  const file = path.join(DATA_DIR, 'allow-all.settings.json');
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify({ skipDangerousModePermissionPrompt: true }, null, 2)); } catch { /* the warning then simply shows */ }
+  return file;
+}
+const termKnown = a => !!(a.term && (a.term.pid || a.term.tmux));
+const TMUX = (process.env.COCKPIT_TERMINAL || '').toLowerCase() === 'tmux';
+
 function claudeArgs(a, firstMessage) {
   const args = [];
   if (a.sessionId) args.push('--resume', a.sessionId);
@@ -523,7 +536,7 @@ function claudeArgs(a, firstMessage) {
     args.push('--name', a.title || a.name);
     if (a.model) args.push('--model', a.model);
   }
-  if (a.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
+  if (a.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions', '--settings', allowAllSettingsFile());
   else if (a.permissionMode && a.permissionMode !== 'default') args.push('--permission-mode', a.permissionMode);
   if (firstMessage) args.push(firstMessage.replace(/\s+/g, ' ').trim());
   return args;
@@ -564,6 +577,15 @@ function openTerminal(a, firstMessage) {
     } else if (process.platform === 'darwin') {
       const line = shellLine(a, firstMessage);
       exec(`osascript -e ${shQuote(`tell application "Terminal" to do script ${JSON.stringify(line)}`)} -e ${shQuote('tell application "Terminal" to activate')}`, { env }, err => err ? fail(reject, err.message) : resolve());
+    } else if (TMUX) {
+      // One tmux session per agent. Look at it with:  tmux attach -t <name>
+      const name = `cockpit-${termTitle(a).replace(/[^\w-]/g, '_')}-${a.id.slice(0, 6)}`;
+      execFile('tmux', ['kill-session', '-t', name], () => {
+        execFile('tmux', ['new-session', '-d', '-s', name, '-x', '160', '-y', '48', '-c', a.cwd, shellLine(a, firstMessage)], { env }, err => {
+          if (err) return fail(reject, err.message);
+          a.term = { tmux: name, alive: true, openedAt: Date.now() }; saveRoster(); resolve();
+        });
+      });
     } else {
       const child = spawn(process.env.COCKPIT_TERMINAL || 'x-terminal-emulator', ['-e', 'bash', '-lc', shellLine(a, firstMessage) + '; exec bash'], { cwd: a.cwd, env, detached: true, stdio: 'ignore' });
       child.on('error', e => fail(reject, e.message));
@@ -578,6 +600,7 @@ function setWindowAlive(a, alive) {
 }
 // Which of the windows the cockpit opened are still there.
 function checkWindows() {
+  for (const a of [...agents.values()].filter(x => x.term && x.term.tmux && x.term.alive !== false)) execFile('tmux', ['has-session', '-t', a.term.tmux], err => setWindowAlive(a, !err));
   const tracked = [...agents.values()].filter(a => a.term && a.term.pid && a.term.alive !== false);
   if (!tracked.length) return;
   if (process.platform !== 'win32') {
@@ -594,9 +617,10 @@ function checkWindows() {
 // Closes a window the cockpit opened, together with the Claude Code running in it.
 function closeWindow(a) {
   const t = a.term;
-  if (!t || !t.pid || t.alive === false) return Promise.resolve(false);
+  if (!termKnown(a) || t.alive === false) return Promise.resolve(false);
   return new Promise(resolve => {
     const done = ok => { setWindowAlive(a, false); resolve(ok); };
+    if (t.tmux) return execFile('tmux', ['kill-session', '-t', t.tmux], () => done(true));
     if (process.platform !== 'win32') {
       try { process.kill(-t.pid, 'SIGTERM'); } catch { try { process.kill(t.pid, 'SIGTERM'); } catch { /* already gone */ } }
       return done(true);
@@ -953,7 +977,7 @@ async function importNamed(proj, list) {
 // An agent that looks active is left alone, so no session ends up with two windows.
 function wakeState(a) {
   if ((a.mode || 'own') !== 'watch') return 'inside the cockpit';
-  if (a.term && a.term.pid && a.term.alive !== false) return 'window is open';
+  if (termKnown(a) && a.term.alive !== false) return 'window is open';
   const mtime = rt(a.id).watch.mtime;
   if (mtime && Date.now() - mtime < 180_000) return 'active in the last three minutes';
   return null;
@@ -1006,27 +1030,26 @@ public static class CockpitKeys {
     var recs = new INPUT_RECORD[text.Length * 2];
     for (int i = 0; i < text.Length; i++) for (int d = 0; d < 2; d++) {
       var r = new INPUT_RECORD(); r.EventType = 1; r.KeyEvent.bKeyDown = d == 0 ? 1 : 0; r.KeyEvent.wRepeatCount = 1;
-      r.KeyEvent.wVirtualKeyCode = text[i] == '\\r' ? (ushort)13 : (ushort)0; r.KeyEvent.UnicodeChar = text[i]; recs[i * 2 + d] = r; }
+      r.KeyEvent.wVirtualKeyCode = text[i] == '\\r' ? (ushort)13 : text[i] == (char)27 ? (ushort)27 : (ushort)0; r.KeyEvent.UnicodeChar = text[i]; recs[i * 2 + d] = r; }
     uint n; return WriteConsoleInput(h, recs, (uint)recs.Length, out n);
   }
-  // Types the text into the console of the given process, waits a moment, then presses Enter.
-  public static string Send(uint pid, string text) {
+  // Types the text into the console of the given process and, if asked, waits a moment and presses Enter.
+  public static string Send(uint pid, string text, bool enter) {
     FreeConsole();
     if (!AttachConsole(pid)) return "could not reach its window (" + Marshal.GetLastWin32Error() + ")";
     IntPtr h = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
     if (h == new IntPtr(-1)) { FreeConsole(); return "could not open its input (" + Marshal.GetLastWin32Error() + ")"; }
-    bool ok = Keys(h, text); Thread.Sleep(600); ok = ok && Keys(h, "\\r");
+    bool ok = Keys(h, text); if (enter) { Thread.Sleep(600); ok = ok && Keys(h, "\\r"); }
     CloseHandle(h); FreeConsole();
     return ok ? "sent" : "typing failed (" + Marshal.GetLastWin32Error() + ")";
   }
 }`;
 
-function typeIntoWindows(targets, text) {
+function typeIntoWindows(targets, line, enter) {
   // targets: [{ id, pid, started }]; resolves to a Map of id -> 'sent' or the reason it failed
-  const line = text.replace(/\s+/g, ' ').trim();
   const script = `$ErrorActionPreference = 'Stop'\nAdd-Type -TypeDefinition @'\n${TYPE_HELPER}\n'@\n$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(line, 'utf8').toString('base64')}'))\n` +
     targets.map(t => `$p = Get-Process -Id ${Number(t.pid)} -ErrorAction SilentlyContinue; $s = 0; if ($p) { try { $s = $p.StartTime.ToFileTimeUtc() } catch {} }\n` +
-      `if (-not $p) { Write-Output '${t.id}|its window is closed' } elseif ("$s" -ne '${String(t.started).replace(/\D/g, '')}') { Write-Output '${t.id}|its window is closed' } else { Write-Output ('${t.id}|' + [CockpitKeys]::Send(${Number(t.pid)}, $text)) }`).join('\n');
+      `if (-not $p) { Write-Output '${t.id}|its window is closed' } elseif ("$s" -ne '${String(t.started).replace(/\D/g, '')}') { Write-Output '${t.id}|its window is closed' } else { Write-Output ('${t.id}|' + [CockpitKeys]::Send(${Number(t.pid)}, $text, $${enter ? 'true' : 'false'})) }`).join('\n');
   return new Promise(resolve => {
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(script)], { windowsHide: true, timeout: 60000 + targets.length * 3000 }, (err, stdout, stderr) => {
       const out = new Map();
@@ -1038,21 +1061,54 @@ function typeIntoWindows(targets, text) {
   });
 }
 
+const ESC = String.fromCharCode(27);
+function canTalk(a) {
+  return (a.mode || 'own') === 'watch' && termKnown(a) && a.term.alive !== false && (!!a.term.tmux || process.platform === 'win32');
+}
+// Why the cockpit should not type into an agent's window right now, or null when it is fine.
+// 'hard' reasons cannot be overruled; the others guard against answering a question by accident.
+function typeBlock(a, force) {
+  if (!termKnown(a) || a.term.alive === false) return { why: 'it has no terminal window opened by the cockpit. Use Open terminal first', hard: true };
+  if (!a.term.tmux && process.platform !== 'win32') return { why: 'typing into a terminal window needs Windows, or tmux on other systems', hard: true };
+  if (force) return null;
+  const r = rt(a.id), info = r.watch.info, mode = r.watch.mode || a.permissionMode;
+  if (r.status === 'need' && info && info.kind === 'ask') return { why: 'it is asking a question in its window, and typed text would answer that question', hard: false };
+  if (mode !== 'bypassPermissions' && r.status === 'need') return { why: 'it may be showing a permission question in its window, and Enter would answer it', hard: false };
+  if (mode !== 'bypassPermissions' && r.status === 'work') return { why: 'it is busy and could show a permission question at any moment', hard: false };
+  return null;
+}
+// Types one line into the windows of the given agents. Resolves to a Map of agent id -> 'sent' or the reason.
+async function typeToAgents(list, text, enter = true) {
+  const line = enter ? text.replace(/\s+/g, ' ').trim() : text;
+  const out = new Map();
+  const tm = list.filter(a => a.term.tmux), win = list.filter(a => !a.term.tmux);
+  for (const a of tm) {
+    out.set(a.id, await new Promise(resolve => {
+      const keys = line === ESC ? ['send-keys', '-t', a.term.tmux, 'Escape'] : ['send-keys', '-t', a.term.tmux, '-l', '--', line];
+      execFile('tmux', keys, err => {
+        if (err) return resolve('could not reach its tmux session');
+        if (!enter) return resolve('sent');
+        setTimeout(() => execFile('tmux', ['send-keys', '-t', a.term.tmux, 'Enter'], e2 => resolve(e2 ? 'could not press Enter in its tmux session' : 'sent')), 600);
+      });
+    }));
+  }
+  if (win.length) for (const [id, res] of await typeIntoWindows(win.map(a => ({ id: a.id, pid: a.term.pid, started: a.term.started })), line, enter)) out.set(id, res);
+  return out;
+}
+function nudgeWatch(a) { rt(a.id).viewedAt = Date.now(); for (const ms of [900, 2200, 4500]) setTimeout(() => pollWatched(a).catch(() => {}), ms); }
+
 async function broadcastTo(p, ids, text) {
   const only = new Set(Array.isArray(ids) ? ids : []);
   const sent = [], skipped = [], typing = [];
   for (const a of [...agents.values()].filter(x => x.projectId === p.id && only.has(x.id))) {
-    const r = rt(a.id);
     if ((a.mode || 'own') !== 'watch') { await ensureHistory(a); sendMessage(a, text); sent.push(a.name); continue; }
-    if (process.platform !== 'win32') { skipped.push({ name: a.name, why: 'typing into a terminal window works on Windows only' }); continue; }
-    if (!a.term || !a.term.pid || a.term.alive === false) { skipped.push({ name: a.name, why: 'it has no window opened by the cockpit' }); continue; }
-    if (r.status === 'work') { skipped.push({ name: a.name, why: 'it is busy' }); continue; }
-    if (r.status === 'need') { skipped.push({ name: a.name, why: 'it may be showing a question in its window' }); continue; }
+    const block = typeBlock(a, false);
+    if (block) { skipped.push({ name: a.name, why: block.why }); continue; }
     typing.push(a);
   }
   if (typing.length) {
-    const res = await typeIntoWindows(typing.map(a => ({ id: a.id, pid: a.term.pid, started: a.term.started })), text);
-    for (const a of typing) { const out = res.get(a.id); if (out === 'sent') { sent.push(a.name); touch(a, 'Received: ' + text); } else skipped.push({ name: a.name, why: out }); }
+    const res = await typeToAgents(typing, text);
+    for (const a of typing) { const out = res.get(a.id); if (out === 'sent') { sent.push(a.name); nudgeWatch(a); } else skipped.push({ name: a.name, why: out }); }
   }
   return { sent, skipped };
 }
@@ -1185,7 +1241,21 @@ const agentRoutes = {
     const text = String(b.text || '').trim();
     const images = (Array.isArray(b.images) ? b.images : []).filter(i => i && /^image\/(png|jpeg|gif|webp)$/.test(i.mediaType) && typeof i.data === 'string').slice(0, 10);
     if (!text && !images.length) return json(res, 400, { error: 'Empty message' });
-    if (a.mode === 'watch') return json(res, 409, { error: `${a.name} runs in a terminal. Take it over before you write to it here.` });
+    if (a.mode === 'watch') {
+      const block = typeBlock(a, b.force === true);
+      if (block) return json(res, 409, { error: `${a.name}: ${block.why}.`, canForce: !block.hard });
+      let line = text;
+      if (images.length) {
+        // A terminal cannot take a pasted image from here, so the image is saved and the agent is told where it is.
+        const dir = path.join(os.tmpdir(), 'agent-cockpit', a.id); fs.mkdirSync(dir, { recursive: true });
+        const paths = images.map((im, n) => { const f = path.join(dir, `${Date.now()}-${n}.${im.mediaType.split('/')[1].replace('jpeg', 'jpg')}`); fs.writeFileSync(f, Buffer.from(im.data, 'base64')); return f; });
+        line = (line ? line + ' ' : '') + paths.map(f => `[Look at this image: ${f}]`).join(' ');
+      }
+      const out = (await typeToAgents([a], line)).get(a.id);
+      if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
+      nudgeWatch(a);
+      return json(res, 200, { ok: true, typed: true });
+    }
     await ensureHistory(a);
     sendMessage(a, text, images);
     json(res, 200, { ok: true });
@@ -1193,7 +1263,7 @@ const agentRoutes = {
   'POST stop': async (a, req, res) => {
     const r = rt(a.id);
     if (a.mode === 'watch') {
-      if (!a.term || !a.term.pid || a.term.alive === false) return json(res, 409, { error: `The cockpit did not open a window for ${a.name}, so it cannot close one. Close its terminal window yourself.` });
+      if (!termKnown(a) || a.term.alive === false) return json(res, 409, { error: `The cockpit did not open a window for ${a.name}, so it cannot close one. Close its terminal window yourself.` });
       await closeWindow(a);
       r.status = 'idle'; touch(a, 'Stopped. Its terminal window was closed.');
       return json(res, 200, { ok: true });
@@ -1203,6 +1273,16 @@ const agentRoutes = {
       for (const p of [...r.pending.values()]) p.cancel();
       try { await r.q.interrupt(); } catch { /* already idle */ }
     }
+    json(res, 200, { ok: true });
+  },
+  // Esc in the agent's window: Claude Code stops what it is doing and waits for you.
+  'POST interrupt': async (a, req, res) => {
+    if ((a.mode || 'own') !== 'watch') return agentRoutes['POST stop'](a, req, res);
+    const block = typeBlock(a, true);
+    if (block) return json(res, 409, { error: `${a.name}: ${block.why}.` });
+    const out = (await typeToAgents([a], ESC, false)).get(a.id);
+    if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
+    nudgeWatch(a);
     json(res, 200, { ok: true });
   },
   'POST decision': async (a, req, res) => {
