@@ -84,7 +84,8 @@ function rt(id) {
   let r = runtimes.get(id);
   if (!r) {
     r = { status: 'idle', items: [], historyLoaded: false, pending: new Map(), q: null, input: null,
-      live: [], queryCost: 0, ctx: null, commands: [], idleTimer: null, stopping: false, turns: 0 };
+      live: [], queryCost: 0, ctx: null, commands: [], idleTimer: null, stopping: false, turns: 0,
+      viewedAt: 0, watch: { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 } };
     runtimes.set(id, r);
   }
   return r;
@@ -102,7 +103,7 @@ function shortPath(p) {
 }
 
 function publicProject(p) {
-  return { id: p.id, name: p.name, cwd: p.cwd, cwdShort: shortPath(p.cwd), note: p.note || '', createdAt: p.createdAt };
+  return { id: p.id, name: p.name, cwd: p.cwd, cwdShort: shortPath(p.cwd), note: p.note || '', autoImport: p.autoImport !== false, createdAt: p.createdAt };
 }
 function samePath(x, y) {
   const n = v => path.resolve(v).replace(/[\\/]+$/, '');
@@ -120,9 +121,9 @@ function teamBrief(a) {
 function publicAgent(a) {
   const r = rt(a.id);
   return {
-    id: a.id, projectId: a.projectId, name: a.name, cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
+    id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
-    login: a.login || null, cost: (a.cost || 0) + r.queryCost, ctx: r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
+    login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
 
@@ -187,7 +188,7 @@ function cleanUserText(t) {
 }
 
 // Build display items from a list of {type, message, parent_tool_use_id} records.
-function itemsFromHistory(messages, cwd) {
+function itemsFromHistory(messages, cwd, live = false) {
   const items = [];
   const tools = new Map();
   for (const m of messages) {
@@ -223,11 +224,15 @@ function itemsFromHistory(messages, cwd) {
       items.push({ k: 'note', id: m.uuid, text: 'Context was compacted here' });
     }
   }
+  // In a session that is still running, a last tool call without a result is still in progress.
+  const tail = items[items.length - 1];
+  if (live && tail && tail.k === 'tool' && !tail.result) tail.status = 'run';
   return items;
 }
 
 async function ensureHistory(a) {
   const r = rt(a.id);
+  if (a.mode === 'watch') return loadWatched(a);
   if (r.historyLoaded) return;
   r.historyLoaded = true;
   if (!a.sessionId || r.items.length) return;
@@ -237,6 +242,174 @@ async function ensureHistory(a) {
   } catch (e) {
     r.items.unshift({ k: 'note', id: crypto.randomUUID(), text: 'Could not read earlier history: ' + e.message });
   }
+}
+
+// ───────────────────────── live view of sessions that run in a terminal ─────────────────────────
+// A watched agent is owned by a terminal. The cockpit never writes to it: it follows the session
+// file Claude Code keeps on disk and shows chat and status from there.
+
+const PROJECTS_DIR = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
+const WATCH_MS = 2500, SCAN_MS = 15_000, TAIL_BYTES = 256 * 1024;
+const IMPORT_DAYS = Number(process.env.COCKPIT_IMPORT_DAYS || 7);
+
+function sessionFile(a) {
+  const w = rt(a.id).watch;
+  if (w.fileFor === a.sessionId && (w.file || Date.now() - w.fileCheckedAt < 30_000)) return w.file;
+  let found = null;
+  try {
+    for (const d of fs.readdirSync(PROJECTS_DIR)) {
+      const f = path.join(PROJECTS_DIR, d, a.sessionId + '.jsonl');
+      if (fs.existsSync(f)) { found = f; break; }
+    }
+  } catch { /* no sessions folder yet */ }
+  w.file = found; w.fileFor = a.sessionId; w.fileCheckedAt = Date.now();
+  return found;
+}
+
+function readTail(file, size) {
+  const len = Math.min(size, TAIL_BYTES);
+  if (len <= 0) return [];
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    if (size > len) lines.shift(); // the first line is probably cut in half
+    return lines;
+  } finally { fs.closeSync(fd); }
+}
+
+// What the session did last, read from the end of its file.
+function tailInfo(lines, cwd) {
+  let info = null, cost = null;
+  for (let i = lines.length - 1; i >= 0 && !(info && cost != null); i--) {
+    if (!lines[i]) continue;
+    let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+    if (cost == null && o.type === 'cost-state' && typeof o.totalCostUSD === 'number') { cost = o.totalCostUSD; continue; }
+    if (info || o.isSidechain || o.isMeta || (o.type !== 'user' && o.type !== 'assistant')) continue;
+    const c = o.message?.content;
+    if (o.type === 'assistant') {
+      if (!Array.isArray(c)) continue;
+      const tool = [...c].reverse().find(b => b.type === 'tool_use');
+      const text = c.filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
+      if (tool) {
+        info = tool.name === 'AskUserQuestion'
+          ? { kind: 'ask', text: tool.input?.questions?.[0]?.question || 'Has a question' }
+          : { kind: 'tool', text: `${tool.name} ${toolSummary(tool.name, tool.input, cwd)}`.trim() };
+      } else if (text) info = { kind: 'text', text };
+    } else if (typeof c === 'string' || Array.isArray(c)) {
+      if (Array.isArray(c) && c.some(b => b.type === 'tool_result')) { info = { kind: 'result', text: '' }; continue; }
+      const raw = typeof c === 'string' ? c : c.filter(b => b.type === 'text').map(b => b.text).join(' ');
+      const text = cleanUserText(raw);
+      if (/^\[Request interrupted/.test(text)) info = { kind: 'stopped', text: 'Interrupted in the terminal' };
+      else if (text) info = { kind: 'user', text };
+      else if (Array.isArray(c) && c.some(b => b.type === 'image')) info = { kind: 'user', text: '(image)' };
+    }
+  }
+  return { info, cost };
+}
+
+function watchState(info, quiet) {
+  if (!info) return null;
+  const min = Math.max(1, Math.round(quiet / 60000));
+  switch (info.kind) {
+    case 'ask': return ['need', 'Question in the terminal: ' + info.text];
+    case 'tool': return quiet > 90_000
+      ? ['need', `Quiet for ${min} min at: ${info.text}. It may be waiting for your approval in the terminal.`]
+      : ['work', info.text];
+    case 'user': return quiet < 600_000 ? ['work', 'Working on: ' + info.text] : ['idle', info.text];
+    case 'result': return quiet < 600_000 ? ['work', null] : ['idle', null];
+    case 'stopped': return ['idle', info.text];
+    default: return quiet < 12 * 3600_000 ? ['review', info.text] : ['idle', info.text];
+  }
+}
+
+// Replace the chat of a watched agent with what is on disk, telling the browser only what changed.
+function applyHistory(a, fresh, firstLoad) {
+  const r = rt(a.id);
+  const old = new Map(r.items.map(i => [i.id, i]));
+  const ids = new Set(fresh.map(i => i.id));
+  const rewritten = !old.size || r.items.some(i => !ids.has(i.id));
+  r.items = fresh;
+  if (rewritten) { if (!(firstLoad && !old.size)) broadcast({ t: 'reset', agentId: a.id }); return; }
+  for (const it of fresh) {
+    const o = old.get(it.id);
+    if (!o || o.status !== it.status || (o.result || '').length !== (it.result || '').length || o.text !== it.text) broadcast({ t: 'item', agentId: a.id, item: it });
+  }
+}
+
+async function loadWatched(a, force = false) {
+  const r = rt(a.id), w = r.watch;
+  if (w.loading) return w.loading;
+  if (!force && w.loadedMtime === w.mtime && r.historyLoaded) return;
+  const at = w.mtime;
+  w.loading = (async () => {
+    try {
+      applyHistory(a, itemsFromHistory(await getSessionMessages(a.sessionId, { dir: a.cwd }), a.cwd, true), !r.historyLoaded);
+      w.loadedMtime = at; r.historyLoaded = true;
+    } catch (e) { if (process.env.COCKPIT_DEBUG) console.error(`[${a.name}] history:`, e.message); }
+    finally { w.loading = null; }
+  })();
+  return w.loading;
+}
+
+async function pollWatched(a) {
+  const r = rt(a.id), w = r.watch, file = sessionFile(a);
+  if (!file) return;
+  let st; try { st = fs.statSync(file); } catch { w.fileFor = null; return; }
+  if (st.mtimeMs !== w.mtime || st.size !== w.size) {
+    w.mtime = st.mtimeMs; w.size = st.size;
+    const t = tailInfo(readTail(file, st.size), a.cwd);
+    if (t.info) w.info = t.info;
+    if (t.cost != null) w.cost = t.cost;
+  }
+  if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
+  const s = watchState(w.info, Date.now() - w.mtime);
+  if (!s) return;
+  const last = s[1] == null ? (a.last || '') : s[1].replace(/\s+/g, ' ').slice(0, 200);
+  const at = Math.round(w.mtime);
+  if (r.status !== s[0] || a.last !== last || a.updatedAt !== at) {
+    r.status = s[0]; a.last = last; a.updatedAt = at;
+    saveRoster(); emitAgent(a);
+  }
+}
+
+let watchBusy = false;
+async function watchTick() {
+  if (watchBusy) return; watchBusy = true;
+  try { for (const a of [...agents.values()]) if (a.mode === 'watch') { try { await pollWatched(a); } catch { /* next tick */ } } }
+  finally { watchBusy = false; }
+}
+
+// Keep the roster in step with the terminals: new named sessions appear by themselves, and a watched
+// agent follows the newest session that carries its name (for example after /clear or a restart).
+let scanBusy = false;
+async function scanProjects() {
+  if (scanBusy) return; scanBusy = true;
+  try {
+    for (const p of [...projects.values()]) {
+      if (p.autoImport === false) continue;
+      let list; try { list = await listSessions({ dir: p.cwd, limit: 500 }); } catch { continue; }
+      const newest = new Map();
+      for (const s of list) {
+        const t = (s.customTitle || '').trim().toLowerCase(); if (!t) continue;
+        const prev = newest.get(t);
+        if (!prev || (s.lastModified || 0) > (prev.lastModified || 0)) newest.set(t, s);
+      }
+      const used = new Set([...agents.values()].map(a => a.sessionId).filter(Boolean));
+      for (const a of agents.values()) {
+        if (a.projectId !== p.id || a.mode !== 'watch') continue;
+        const s = newest.get((a.title || a.name).toLowerCase());
+        if (!s || s.sessionId === a.sessionId || used.has(s.sessionId)) continue;
+        used.add(s.sessionId);
+        a.sessionId = s.sessionId;
+        const r = rt(a.id);
+        r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 }; r.items = []; r.historyLoaded = false;
+        saveRoster(); broadcast({ t: 'reset', agentId: a.id }); emitAgent(a);
+      }
+      try { await importNamed(p, list); } catch { /* next scan */ }
+    }
+  } finally { scanBusy = false; }
 }
 
 // ───────────────────────── engine: one SDK session per agent ─────────────────────────
@@ -526,23 +699,25 @@ function uniqueName(want, projectId) {
 
 // Adds every named Claude Code session of the project folder as an agent (newest session per name).
 // Nothing is started: an imported agent only reads its history until you send it a message.
-async function importNamed(proj) {
+async function importNamed(proj, list) {
   const have = new Set([...agents.values()].map(a => a.sessionId).filter(Boolean));
-  const taken = new Set([...agents.values()].filter(a => a.projectId === proj.id).map(a => a.name.toLowerCase()));
+  const taken = new Set([...agents.values()].filter(a => a.projectId === proj.id).flatMap(a => [a.name.toLowerCase(), (a.title || '').toLowerCase()]));
+  const ignored = new Set((proj.ignored || []).map(t => t.toLowerCase()));
+  const since = Date.now() - IMPORT_DAYS * 86_400_000;
   const byName = new Map();
-  for (const s of await listSessions({ dir: proj.cwd, limit: 500 })) {
-    const title = (s.customTitle || '').trim();
-    if (!title || have.has(s.sessionId) || taken.has(title.toLowerCase())) continue;
-    const prev = byName.get(title.toLowerCase());
-    if (!prev || (s.lastModified || 0) > (prev.lastModified || 0)) byName.set(title.toLowerCase(), s);
+  for (const s of list || await listSessions({ dir: proj.cwd, limit: 500 })) {
+    const title = (s.customTitle || '').trim(), key = title.toLowerCase();
+    if (!title || have.has(s.sessionId) || taken.has(key) || ignored.has(key) || (s.lastModified || 0) < since) continue;
+    const prev = byName.get(key);
+    if (!prev || (s.lastModified || 0) > (prev.lastModified || 0)) byName.set(key, s);
   }
   const added = [];
   for (const s of [...byName.values()].sort((x, y) => (y.lastModified || 0) - (x.lastModified || 0))) {
     let cwd = proj.cwd;
     try { if (s.cwd && fs.statSync(s.cwd).isDirectory()) cwd = path.resolve(s.cwd); } catch { /* keep the project folder */ }
-    const a = { id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(s.customTitle.trim(), proj.id), cwd, model: '', permissionMode: 'default',
-      sessionId: s.sessionId, createdAt: Date.now(), updatedAt: s.lastModified || Date.now(), cost: 0,
-      last: 'Added from this folder. Close it in the terminal before you write to it here.' };
+    const title = s.customTitle.trim();
+    const a = { id: crypto.randomUUID(), projectId: proj.id, mode: 'watch', title, name: uniqueName(title, proj.id), cwd, model: '', permissionMode: 'default',
+      sessionId: s.sessionId, createdAt: Date.now(), updatedAt: s.lastModified || Date.now(), cost: 0, last: '' };
     agents.set(a.id, a); added.push(a); emitAgent(a);
   }
   if (added.length) saveRoster();
@@ -602,7 +777,7 @@ const routes = {
     if (!st || !st.isDirectory()) return json(res, 400, { error: `Folder not found: ${cwd}` });
     const dup = [...projects.values()].find(p => samePath(p.cwd, cwd));
     if (dup) return json(res, 200, { project: publicProject(dup), existing: true, imported: 0 });
-    const p = { id: crypto.randomUUID(), name: String(b.name || '').trim().slice(0, 60) || path.basename(cwd) || cwd, cwd, note: String(b.note || '').slice(0, 4000), createdAt: Date.now() };
+    const p = { id: crypto.randomUUID(), name: String(b.name || '').trim().slice(0, 60) || path.basename(cwd) || cwd, cwd, note: String(b.note || '').slice(0, 4000), autoImport: b.importNamed !== false, ignored: [], createdAt: Date.now() };
     projects.set(p.id, p); saveRoster();
     broadcast({ t: 'project', project: publicProject(p) });
     let imported = 0;
@@ -626,12 +801,15 @@ const routes = {
       id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(b.name, proj.id), cwd, model: String(b.model || '').trim(),
       permissionMode: ['default', 'acceptEdits', 'plan'].includes(b.permissionMode) ? b.permissionMode : 'default',
       sessionId: b.sessionId || null, createdAt: Date.now(), updatedAt: Date.now(), cost: 0,
-      last: b.sessionId ? 'Resumed. Send a message to continue.' : 'Ready. Waiting for a task.',
+      mode: b.sessionId && b.mode === 'watch' ? 'watch' : 'own', title: String(b.title || '').trim(),
+      last: b.sessionId ? 'Taken over. Send a message to continue.' : 'Ready. Waiting for a task.',
     };
+    if (a.title && proj.ignored) proj.ignored = proj.ignored.filter(t => t.toLowerCase() !== a.title.toLowerCase());
     agents.set(a.id, a); saveRoster();
     const r = rt(a.id);
+    if (a.mode === 'watch') { a.last = ''; emitAgent(a); return json(res, 200, { agent: publicAgent(a) }); }
     if (b.sessionId) await ensureHistory(a); else r.historyLoaded = true;
-    note(a, b.sessionId ? `Resumed session ${b.sessionId.slice(0, 8)} in ${shortPath(cwd)}` : `Launched in ${shortPath(cwd)}`);
+    note(a, b.sessionId ? `Taken over from session ${b.sessionId.slice(0, 8)} in ${shortPath(cwd)}` : `Launched in ${shortPath(cwd)}`);
     emitAgent(a);
     if (b.firstMessage && String(b.firstMessage).trim()) sendMessage(a, String(b.firstMessage).trim());
     json(res, 200, { agent: publicAgent(a) });
@@ -640,8 +818,9 @@ const routes = {
 
 const agentRoutes = {
   'GET items': async (a, req, res) => {
-    await ensureHistory(a);
     const r = rt(a.id);
+    r.viewedAt = Date.now();
+    await ensureHistory(a);
     json(res, 200, { items: r.items, commands: r.commands.length ? r.commands : (a.commands || []) });
   },
   'POST message': async (a, req, res) => {
@@ -649,6 +828,7 @@ const agentRoutes = {
     const text = String(b.text || '').trim();
     const images = (Array.isArray(b.images) ? b.images : []).filter(i => i && /^image\/(png|jpeg|gif|webp)$/.test(i.mediaType) && typeof i.data === 'string').slice(0, 10);
     if (!text && !images.length) return json(res, 400, { error: 'Empty message' });
+    if (a.mode === 'watch') return json(res, 409, { error: `${a.name} runs in a terminal. Take it over before you write to it here.` });
     await ensureHistory(a);
     sendMessage(a, text, images);
     json(res, 200, { ok: true });
@@ -693,9 +873,38 @@ const agentRoutes = {
     touch(a);
     json(res, 200, { agent: publicAgent(a) });
   },
+  // The browser says it is looking at this agent, so its chat is kept up to date.
+  'POST view': async (a, req, res) => { rt(a.id).viewedAt = Date.now(); json(res, 200, { ok: true }); },
+  // The cockpit becomes the place this agent runs. The terminal must be closed first.
+  'POST takeover': async (a, req, res) => {
+    const r = rt(a.id);
+    if (a.mode === 'watch') {
+      await loadWatched(a, true);
+      a.mode = 'own'; r.status = 'idle'; r.historyLoaded = true;
+      note(a, 'Taken over by the cockpit. Write here from now on, not in the terminal.');
+      touch(a, 'Taken over. Send a message to continue.');
+    }
+    json(res, 200, { agent: publicAgent(a) });
+  },
+  // Hands the agent back to a terminal. The cockpit stops its process and only watches again.
+  'POST release': async (a, req, res) => {
+    const r = rt(a.id);
+    if (a.mode !== 'watch' && a.sessionId) {
+      r.stopping = true;
+      for (const p of [...r.pending.values()]) p.cancel();
+      closeQuery(a);
+      a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0;
+      a.mode = 'watch'; if (!a.title) a.title = a.name;
+      r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 };
+      r.status = 'idle'; touch(a, 'Released to the terminal.');
+    }
+    json(res, 200, { agent: publicAgent(a), command: `claude --resume ${a.sessionId}` });
+  },
   // Removes the agent from the cockpit. The session file stays on disk and can be resumed again.
   'DELETE ': async (a, req, res) => {
     const r = rt(a.id);
+    const proj = projects.get(a.projectId);
+    if (proj && a.title) proj.ignored = [...new Set([...(proj.ignored || []), a.title])]; // do not re-add it automatically
     r.stopping = true;
     for (const p of [...r.pending.values()]) p.cancel();
     closeQuery(a);
@@ -730,6 +939,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         if (typeof b.name === 'string' && b.name.trim()) p.name = b.name.trim().slice(0, 60);
         if (typeof b.note === 'string') p.note = b.note.slice(0, 4000);
+        if (typeof b.autoImport === 'boolean') p.autoImport = b.autoImport;
         saveRoster(); broadcast({ t: 'project', project: publicProject(p) });
         return json(res, 200, { project: publicProject(p) });
       }
@@ -761,6 +971,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 loadRoster();
+setInterval(watchTick, WATCH_MS);
+setInterval(scanProjects, SCAN_MS);
+setTimeout(scanProjects, 800);
 server.listen(PORT, HOST, () => {
   const shown = LOOPBACK.has(HOST) ? 'localhost' : HOST;
   const url = `http://${shown}:${PORT}/`;
