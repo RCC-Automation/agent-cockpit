@@ -63,7 +63,13 @@ function loadRoster() {
   try {
     const raw = JSON.parse(fs.readFileSync(ROSTER_FILE, 'utf8'));
     for (const p of raw.projects || []) projects.set(p.id, p);
-    for (const a of raw.agents || []) if (projects.has(a.projectId)) agents.set(a.id, a);
+    const bootedAt = Date.now() - os.uptime() * 1000;
+    for (const a of raw.agents || []) {
+      if (!projects.has(a.projectId)) continue;
+      // A window opened before the PC last started cannot be open any more.
+      if (a.term && (!a.term.openedAt || a.term.openedAt < bootedAt)) a.term.alive = false;
+      agents.set(a.id, a);
+    }
   } catch { /* first run */ }
 }
 function rosterJson() {
@@ -483,7 +489,7 @@ function openTerminal(a, firstMessage) {
       execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(outer)], { env, windowsHide: true, timeout: 30000 }, (err, stdout, stderr) => {
         const m = /(\d+),(\d+)/.exec(String(stdout));
         if (err || !m) return fail(reject, err ? err.message : stderr);
-        a.term = { pid: Number(m[1]), started: m[2], image: path.basename(shell).toLowerCase(), alive: true };
+        a.term = { pid: Number(m[1]), started: m[2], image: path.basename(shell).toLowerCase(), alive: true, openedAt: Date.now() };
         saveRoster(); resolve();
       });
     } else if (process.platform === 'win32') {
@@ -494,7 +500,7 @@ function openTerminal(a, firstMessage) {
     } else {
       const child = spawn(process.env.COCKPIT_TERMINAL || 'x-terminal-emulator', ['-e', 'bash', '-lc', shellLine(a, firstMessage) + '; exec bash'], { cwd: a.cwd, env, detached: true, stdio: 'ignore' });
       child.on('error', e => fail(reject, e.message));
-      child.on('spawn', () => { a.term = { pid: child.pid, started: '0', image: '', alive: true }; child.unref(); saveRoster(); resolve(); });
+      child.on('spawn', () => { a.term = { pid: child.pid, started: '0', image: '', alive: true, openedAt: Date.now() }; child.unref(); saveRoster(); resolve(); });
     }
   });
 }
@@ -884,9 +890,10 @@ function wakeState(a) {
   if (mtime && Date.now() - mtime < 180_000) return 'active in the last three minutes';
   return null;
 }
-async function wakeAll(p) {
+async function wakeAll(p, ids) {
   const opened = [], skipped = [], failed = [];
-  for (const a of [...agents.values()].filter(x => x.projectId === p.id)) {
+  const only = Array.isArray(ids) ? new Set(ids) : null;
+  for (const a of [...agents.values()].filter(x => x.projectId === p.id && (!only || only.has(x.id)))) {
     const why = wakeState(a);
     if (why) { skipped.push({ name: a.name, why }); continue; }
     try { await openTerminal(a); touch(a, a.sessionId ? 'Opened in a terminal window.' : 'Starting in a terminal window.'); opened.push(a.name); }
@@ -894,6 +901,19 @@ async function wakeAll(p) {
     await new Promise(done => setTimeout(done, 400));
   }
   return { opened, skipped, failed };
+}
+
+// Takes an agent off the roster. Its session file and its terminal window are left alone. Only an
+// agent that runs inside the cockpit stops, because the cockpit is what runs it.
+function removeAgent(a) {
+  const r = rt(a.id);
+  const proj = projects.get(a.projectId);
+  if (proj && a.title) proj.ignored = [...new Set([...(proj.ignored || []), a.title])]; // do not re-add it automatically
+  r.stopping = true;
+  for (const p of [...r.pending.values()]) p.cancel();
+  closeQuery(a);
+  agents.delete(a.id); runtimes.delete(a.id);
+  broadcast({ t: 'remove', agentId: a.id });
 }
 
 // Stops the cockpit itself. Agents in terminal windows are not touched. Agents that run inside the
@@ -1107,17 +1127,7 @@ const agentRoutes = {
     json(res, 200, { agent: publicAgent(a) });
   },
   // Removes the agent from the cockpit. The session file stays on disk and can be resumed again.
-  'DELETE ': async (a, req, res) => {
-    const r = rt(a.id);
-    const proj = projects.get(a.projectId);
-    if (proj && a.title) proj.ignored = [...new Set([...(proj.ignored || []), a.title])]; // do not re-add it automatically
-    r.stopping = true;
-    for (const p of [...r.pending.values()]) p.cancel();
-    closeQuery(a);
-    agents.delete(a.id); runtimes.delete(a.id); saveRoster();
-    broadcast({ t: 'remove', agentId: a.id });
-    json(res, 200, { ok: true });
-  },
+  'DELETE ': async (a, req, res) => { removeAgent(a); saveRoster(); json(res, 200, { ok: true }); },
 };
 
 const server = http.createServer(async (req, res) => {
@@ -1137,11 +1147,23 @@ const server = http.createServer(async (req, res) => {
       if (!p) return json(res, 404, { error: 'Project not found' });
       return json(res, 200, { imported: (await importNamed(p)).length });
     }
+    const rm = /^\/api\/projects\/([0-9a-f-]{36})\/remove$/.exec(url.pathname);
+    if (rm && req.method === 'POST') {
+      const p = projects.get(rm[1]);
+      if (!p) return json(res, 404, { error: 'Project not found' });
+      const b = await readBody(req);
+      const ids = new Set(Array.isArray(b.ids) ? b.ids : []);
+      const gone = [...agents.values()].filter(a => a.projectId === p.id && ids.has(a.id));
+      for (const a of gone) removeAgent(a);
+      saveRoster();
+      return json(res, 200, { removed: gone.map(a => a.name) });
+    }
     const wk = /^\/api\/projects\/([0-9a-f-]{36})\/wake$/.exec(url.pathname);
     if (wk && req.method === 'POST') {
       const p = projects.get(wk[1]);
       if (!p) return json(res, 404, { error: 'Project not found' });
-      return json(res, 200, await wakeAll(p));
+      const b = await readBody(req);
+      return json(res, 200, await wakeAll(p, b.ids));
     }
     const pm = /^\/api\/projects\/([0-9a-f-]{36})$/.exec(url.pathname);
     if (pm) {

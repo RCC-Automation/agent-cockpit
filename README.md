@@ -16,6 +16,8 @@ A small control station for your Claude Code agents. It runs on your own PC and 
   are shown apart from your own.
 - **Wake all.** One click opens a PowerShell window for every agent of the project that is not running, one window
   per agent. Each continues its session and waits for you. Agents that are already running are left alone.
+- **Team.** All agents of the project in one list with checkboxes. Wake only the ones you tick, or remove several
+  at once, for example every agent that has been idle for three days. Removed agents are not added again automatically.
 - **Permissions.** Per agent or for a whole project in Settings: ask before edits and commands, accept edits, plan
   first, or allow everything. Allow everything means the agent runs any command and changes or deletes any file
   without asking. It starts Claude Code with `--dangerously-skip-permissions`.
