@@ -39,9 +39,7 @@ A small control station for your Claude Code agents. It runs on your own PC and 
   service. The dictation language is set in the Aa menu.
 - **Look.** The Aa button sets the theme (light, dark, midnight, paper, high contrast, or follow the PC) and the
   text size. The choice is kept per browser.
-- **Approvals and questions.** Allow once, always allow, or deny. Answer questions with one click.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.
-- **Context.** A meter per agent, a breakdown of what fills it, and a Compact button.
 - **Stop.** Only on request. Close window closes the PowerShell window of an agent the cockpit opened. Interrupt
   presses Esc in it. The cockpit never closes a window you opened yourself.
 
@@ -85,7 +83,6 @@ uses the Claude login already stored on this PC, which is your subscription.
 - An `ANTHROPIC_API_KEY` in your environment is **not** passed to the agents, so they cannot switch to
   pay-per-use billing by accident. Set `COCKPIT_ALLOW_API_KEY=1` only if you want that.
 
-To use your installed Claude Code instead of the bundled one, set `COCKPIT_CLAUDE_PATH` to its full path.
 
 ## How it works
 
@@ -121,9 +118,7 @@ Set these before starting, as environment variables.
 | `COCKPIT_PORT` | `4600` | Port of the web page |
 | `COCKPIT_HOST` | `127.0.0.1` | Address to listen on. Leave it unless you want to reach the cockpit from another device |
 | `COCKPIT_TOKEN` | none | Password. Required when `COCKPIT_HOST` is not local |
-| `COCKPIT_IDLE_MINUTES` | `20` | Close an idle agent process after this many minutes. `0` keeps them alive |
 | `COCKPIT_DATA` | `./data` | Where the roster is stored |
-| `COCKPIT_CLAUDE_PATH` | bundled | Path to a Claude Code executable to use instead of the bundled one |
 | `COCKPIT_CLAUDE_ARGS` | none | Extra arguments added to `claude` when the cockpit opens a terminal window |
 | `COCKPIT_TERMINAL` | window | `wt` opens agents as tabs in Windows Terminal (the cockpit then cannot type into them). On Linux and macOS, `tmux` runs each agent in a tmux session the cockpit can type into |
 | `COCKPIT_SHELL` | `powershell.exe` | The shell the terminal window runs, for example `pwsh.exe` |

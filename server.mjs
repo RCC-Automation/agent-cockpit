@@ -1,6 +1,6 @@
 // Agent Cockpit — a small local control station for Claude Code agents.
-// One Node process: keeps the roster, runs one Agent SDK session per agent,
-// relays chat, approvals and context use to the browser over SSE.
+// One Node process: keeps the roster, opens one terminal window per agent, shows each chat by
+// reading the session file, and writes by typing into the window.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -9,7 +9,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { exec, execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { query, listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
+import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.COCKPIT_PORT || 4600);
@@ -17,7 +17,6 @@ const HOST = process.env.COCKPIT_HOST || '127.0.0.1';
 const TOKEN = process.env.COCKPIT_TOKEN || '';
 const DATA_DIR = process.env.COCKPIT_DATA || path.join(ROOT, 'data');
 const ROSTER_FILE = path.join(DATA_DIR, 'roster.json');
-const IDLE_CLOSE_MS = Number(process.env.COCKPIT_IDLE_MINUTES || 20) * 60_000;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_BODY = 30 * 1024 * 1024;
 const MAX_RESULT_CHARS = 6000;
@@ -27,10 +26,9 @@ const PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'plan', 'dontAsk', '
 // environment would silently switch them to pay-per-use billing, so it is not passed on
 // unless you ask for it with COCKPIT_ALLOW_API_KEY=1.
 const ALLOW_API_KEY = process.env.COCKPIT_ALLOW_API_KEY === '1';
-const LOGIN_HINT = 'This PC is not logged in to Claude. Open a terminal, run "claude", log in with your subscription, then send the message again.';
 
 function agentEnv() {
-  const env = { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'agent-cockpit/0.1.0' };
+  const env = { ...process.env };
   if (!ALLOW_API_KEY) { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; }
   // If the cockpit itself was started from inside a Claude Code session, these markers would make every
   // agent think it is a child of that session. A child session does not save its transcript, so the
@@ -39,16 +37,6 @@ function agentEnv() {
     'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_BRIDGE_SESSION_ID', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_ENTRYPOINT']) delete env[k];
   return env;
 }
-// Turn what the engine reports about its login into one plain label.
-function describeLogin(info) {
-  if (!info) return null;
-  const src = info.apiKeySource || '';
-  const provider = info.apiProvider && info.apiProvider !== 'firstParty' ? info.apiProvider : '';
-  if (provider) return { label: `via ${provider}`, api: true };
-  if (src && src !== 'none' && src !== 'oauth') return { label: `API key (${src})`, api: true };
-  return { label: info.subscriptionType ? `subscription · ${info.subscriptionType}` : 'Claude login', api: false };
-}
-
 if (!LOOPBACK.has(HOST) && !TOKEN) {
   console.error('Refusing to start: COCKPIT_HOST is not local, so COCKPIT_TOKEN must be set.\n' +
     'This page can run commands on this PC. Never expose it without a token.');
@@ -99,9 +87,7 @@ function saveRoster() {
 function rt(id) {
   let r = runtimes.get(id);
   if (!r) {
-    r = { status: 'idle', items: [], historyLoaded: false, pending: new Map(), q: null, input: null,
-      live: [], queryCost: 0, ctx: null, commands: [], idleTimer: null, stopping: false, turns: 0,
-      viewedAt: 0, watch: { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 } };
+    r = { status: 'idle', items: [], historyLoaded: false, commands: [], viewedAt: 0, watch: { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 } };
     runtimes.set(id, r);
   }
   return r;
@@ -125,21 +111,12 @@ function samePath(x, y) {
   const n = v => path.resolve(v).replace(/[\\/]+$/, '');
   return process.platform === 'win32' ? n(x).toLowerCase() === n(y).toLowerCase() : n(x) === n(y);
 }
-function teamBrief(a) {
-  const p = projects.get(a.projectId);
-  if (!p) return '';
-  const mates = [...agents.values()].filter(x => x.projectId === p.id && x.id !== a.id).map(x => x.name);
-  return `You are the agent named "${a.name}" in the project "${p.name}". The project folder is ${p.cwd}; keep your work inside it unless the user says otherwise.` +
-    (mates.length ? ` Other agents working in this project: ${mates.join(', ')}. They may be changing files at the same time.` : '') +
-    (p.note ? `\n\nProject notes from the user:\n${p.note}` : '');
-}
-
 function publicAgent(a) {
   const r = rt(a.id);
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), adopted: !!(a.term && a.term.adopted && a.term.alive !== false), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
-    interrupted: !!a.interrupted, login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
+    login: a.login || null, cost: r.watch.cost || 0,
   };
 }
 
@@ -157,18 +134,6 @@ function touch(a, last) {
   saveRoster();
   emitAgent(a);
 }
-function setStatus(a, status, last) { rt(a.id).status = status; touch(a, last); }
-
-function addItem(a, item) {
-  const r = rt(a.id);
-  if (!item.id) item.id = crypto.randomUUID();
-  item.ts = item.ts || Date.now();
-  r.items.push(item);
-  broadcast({ t: 'item', agentId: a.id, item });
-  return item;
-}
-function updateItem(a, item) { broadcast({ t: 'item', agentId: a.id, item }); }
-function note(a, text) { return addItem(a, { k: 'note', text }); }
 
 // ───────────────────────── transcript → items ─────────────────────────
 
@@ -330,19 +295,7 @@ function itemsFromHistory(messages, a, live = false) {
   return items;
 }
 
-async function ensureHistory(a) {
-  const r = rt(a.id);
-  if (a.mode === 'watch') return loadWatched(a);
-  if (r.historyLoaded) return;
-  r.historyLoaded = true;
-  if (!a.sessionId || r.items.length) return;
-  try {
-    const msgs = await getSessionMessages(a.sessionId, { dir: a.cwd });
-    r.items = itemsFromHistory(msgs, a).concat(r.items);
-  } catch (e) {
-    r.items.unshift({ k: 'note', id: crypto.randomUUID(), text: 'Could not read earlier history: ' + e.message });
-  }
-}
+const ensureHistory = a => loadWatched(a);
 
 // ───────────────────────── live view of sessions that run in a terminal ─────────────────────────
 // A watched agent is owned by a terminal. The cockpit never writes to it: it follows the session
@@ -564,7 +517,7 @@ function shellLine(a, firstMessage) {
 // Opens the window and remembers which process it is, so the cockpit can tell whether it is
 // still open and can close it when asked. Windows that the person opened themselves are never touched.
 function openTerminal(a, firstMessage) {
-  const env = agentEnv(); delete env.CLAUDE_AGENT_SDK_CLIENT_APP;
+  const env = agentEnv();
   const fail = (reject, what) => reject(new Error('Could not open a terminal window: ' + String(what || 'no answer').split('\n')[0]));
   const shell = process.env.COCKPIT_SHELL || 'powershell.exe';
   const useWt = (process.env.COCKPIT_TERMINAL || '').toLowerCase() === 'wt';
@@ -679,267 +632,12 @@ function adoptWindows() {
   });
 }
 
-// Changes how much an agent may do without asking. Allow-all can only be switched on or off when the
-// agent's process starts, so a running cockpit agent is restarted between turns.
-async function setPermissionMode(a, mode) {
+// Changes how much an agent may do without asking. It applies the next time the cockpit opens the
+// agent's terminal window.
+function setPermissionMode(a, mode) {
   if (!PERMISSION_MODES.includes(mode) || mode === (a.permissionMode || 'default')) return;
-  const r = rt(a.id), crossesBypass = mode === 'bypassPermissions' || a.permissionMode === 'bypassPermissions';
   a.permissionMode = mode;
-  if (r.q && crossesBypass) { if (r.status === 'work' || r.status === 'need') r.restartWhenIdle = true; else closeQuery(a); }
-  else if (r.q) { try { await r.q.setPermissionMode(mode); } catch { /* applies on the next start */ } }
   saveRoster(); emitAgent(a);
-}
-
-// Stops running an agent inside the cockpit, so a terminal can own its session.
-async function releaseAgent(a, last) {
-  const r = rt(a.id);
-  if (a.mode === 'watch') return;
-  const wasRunning = !!r.q;
-  r.stopping = true;
-  for (const p of [...r.pending.values()]) p.cancel();
-  closeQuery(a);
-  a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0;
-  a.mode = 'watch'; if (!a.title) a.title = a.name;
-  r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 };
-  r.status = 'idle'; touch(a, last);
-  if (wasRunning) await new Promise(res => setTimeout(res, 800)); // let the process let go of the session
-}
-
-// ───────────────────────── engine: one SDK session per agent ─────────────────────────
-
-function makeQueue() {
-  const buf = []; let wake = null; let closed = false;
-  return {
-    push(v) { buf.push(v); if (wake) { wake(); wake = null; } },
-    close() { closed = true; if (wake) { wake(); wake = null; } },
-    async *[Symbol.asyncIterator]() {
-      while (true) {
-        while (buf.length) yield buf.shift();
-        if (closed) return;
-        await new Promise(r => { wake = r; });
-      }
-    },
-  };
-}
-
-function armIdleClose(a) {
-  const r = rt(a.id);
-  clearTimeout(r.idleTimer);
-  if (!IDLE_CLOSE_MS) return;
-  r.idleTimer = setTimeout(() => {
-    if (r.q && r.status !== 'work' && r.status !== 'need') closeQuery(a, 'idle');
-  }, IDLE_CLOSE_MS);
-}
-
-function closeQuery(a, why) {
-  const r = rt(a.id);
-  if (!r.q) return;
-  try { r.input?.close(); r.q.close(); } catch { /* already gone */ }
-  if (why === 'idle') console.log(`[${a.name}] process closed after idle; it resumes on the next message`);
-}
-
-function startQuery(a) {
-  const r = rt(a.id);
-  r.input = makeQueue();
-  r.stopping = false;
-  const options = {
-    cwd: a.cwd,
-    env: agentEnv(),
-    includePartialMessages: true,
-    systemPrompt: { type: 'preset', preset: 'claude_code', append: teamBrief(a) },
-    permissionMode: a.permissionMode || 'default',
-    allowDangerouslySkipPermissions: a.permissionMode === 'bypassPermissions',
-    canUseTool: (toolName, input, o) => askUser(a, toolName, input, o),
-    stderr: d => { if (process.env.COCKPIT_DEBUG) process.stderr.write(`[${a.name}] ${d}`); },
-  };
-  if (a.model) options.model = a.model;
-  if (process.env.COCKPIT_CLAUDE_PATH) options.pathToClaudeCodeExecutable = process.env.COCKPIT_CLAUDE_PATH;
-  if (a.sessionId) options.resume = a.sessionId; else options.title = a.name;
-
-  let q;
-  try { q = query({ prompt: r.input, options }); }
-  catch (e) { note(a, 'Could not start: ' + e.message); setStatus(a, 'failed', 'Could not start'); return; }
-  r.q = q;
-  emitAgent(a);
-
-  (async () => {
-    try { for await (const m of q) handleMessage(a, m); }
-    catch (e) {
-      if (!r.stopping) { note(a, 'Session ended with an error: ' + (e?.message || e)); setStatus(a, 'failed', 'Error: ' + (e?.message || e)); }
-    } finally {
-      if (r.q === q) {
-        r.q = null; r.input = null;
-        a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0;
-        for (const p of r.pending.values()) p.cancel();
-        if (r.status === 'work' || r.status === 'need') setStatus(a, 'idle', a.last);
-        else { saveRoster(); emitAgent(a); }
-      }
-    }
-  })();
-}
-
-function finalizeLiveText(a, text) {
-  const r = rt(a.id);
-  const live = r.live.shift();
-  if (live) { live.text = text; live.streaming = false; updateItem(a, live); return live; }
-  return addItem(a, { k: 'text', text });
-}
-
-function handleMessage(a, m) {
-  const r = rt(a.id);
-  if (m.type === 'system') {
-    if (m.subtype === 'init') {
-      if (m.session_id && a.sessionId !== m.session_id) { a.sessionId = m.session_id; saveRoster(); }
-      a.modelResolved = m.model;
-      r.commands = m.slash_commands || [];
-      a.commands = r.commands; saveRoster();
-      broadcast({ t: 'commands', agentId: a.id, commands: r.commands });
-      emitAgent(a);
-      checkLogin(a, m.apiKeySource);
-    } else if (m.subtype === 'compact_boundary') {
-      const c = m.compact_metadata || {};
-      const k = n => n ? Math.round(n / 1000) + 'k' : '?';
-      note(a, `Context compacted (${c.trigger || 'manual'}) · ${k(c.pre_tokens)} → ${k(c.post_tokens)} tokens`);
-      refreshContext(a);
-    }
-    return;
-  }
-  if (m.parent_tool_use_id) return; // inner work of subagents stays folded into their tool row
-
-  if (m.type === 'stream_event') {
-    const ev = m.event;
-    if (ev.type === 'content_block_start' && ev.content_block?.type === 'text') {
-      const item = addItem(a, { k: 'text', text: '', streaming: true });
-      r.live.push(item); r.liveCurrent = item;
-    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && r.liveCurrent) {
-      r.liveCurrent.text += ev.delta.text;
-      broadcast({ t: 'delta', agentId: a.id, id: r.liveCurrent.id, text: ev.delta.text });
-    } else if (ev.type === 'content_block_stop') {
-      r.liveCurrent = null;
-    }
-    return;
-  }
-
-  if (m.type === 'assistant') {
-    for (const b of m.message?.content || []) {
-      if (b.type === 'text') { if (b.text.trim() || r.live.length) { const it = finalizeLiveText(a, b.text); a.last = it.text; } }
-      else if (b.type === 'tool_use') {
-        if (b.name === 'AskUserQuestion') continue; // shown as a question card instead
-        const sum = toolSummary(b.name, b.input, a.cwd);
-        addItem(a, { k: 'tool', id: b.id, name: b.name, summary: sum, input: b.input, files: viewFiles(a, b.input), result: '', status: 'run' });
-        a.last = `${b.name} ${sum}`;
-      }
-    }
-    if (m.error) note(a, m.error === 'authentication_failed' ? LOGIN_HINT : 'Model error: ' + m.error);
-    touch(a, a.last);
-    return;
-  }
-
-  if (m.type === 'user') {
-    const content = m.message?.content;
-    if (!Array.isArray(content)) return;
-    for (const b of content) {
-      if (b.type !== 'tool_result') continue;
-      const it = r.items.find(x => x.k === 'tool' && x.id === b.tool_use_id);
-      if (!it) continue;
-      it.result = clip(textOfToolResult(b.content)); it.status = b.is_error ? 'err' : 'ok';
-      updateItem(a, it);
-    }
-    return;
-  }
-
-  if (m.type === 'result') {
-    if (r.restartWhenIdle) { r.restartWhenIdle = false; setTimeout(() => closeQuery(a), 200); } // a new permission mode starts with the next message
-    r.queryCost = m.total_cost_usd || r.queryCost;
-    r.live = []; r.liveCurrent = null;
-    for (const it of r.items) if (it.k === 'tool' && it.status === 'run') { it.status = 'ok'; updateItem(a, it); }
-    r.turns++;
-    refreshContext(a);
-    if (m.queued_turn_count > 0) { touch(a); return; }
-    if (m.subtype === 'success' && !m.is_error) {
-      setStatus(a, 'review', a.last || m.result || 'Finished');
-    } else if (r.stopping) {
-      r.stopping = false; note(a, 'Stopped by you'); setStatus(a, 'idle', 'Stopped by you');
-    } else {
-      const why = (m.errors && m.errors.join('; ')) || m.result || m.subtype;
-      note(a, 'Turn failed: ' + why);
-      if (/log ?in|authenticat|credential|api key|unauthori/i.test(String(why))) note(a, LOGIN_HINT);
-      setStatus(a, 'failed', 'Failed: ' + why);
-    }
-    armIdleClose(a);
-  }
-}
-
-async function checkLogin(a, apiKeySource) {
-  const r = rt(a.id);
-  let info = { apiKeySource };
-  try { if (r.q) info = { apiKeySource, ...(await r.q.accountInfo()) }; } catch { /* older CLI */ }
-  const login = describeLogin(info);
-  if (!login) return;
-  const changed = !a.login || a.login.label !== login.label;
-  a.login = login; saveRoster(); emitAgent(a);
-  if (login.api && changed) note(a, `Attention: this agent is billed through ${login.label}, not through your Claude subscription.`);
-}
-
-async function refreshContext(a) {
-  const r = rt(a.id);
-  if (!r.q) return r.ctx;
-  try {
-    const u = await r.q.getContextUsage();
-    r.ctx = {
-      percentage: Math.round(u.percentage), totalTokens: u.totalTokens, maxTokens: u.maxTokens, model: u.model,
-      categories: (u.categories || []).filter(c => c.tokens > 0 && c.kind !== 'deferred')
-        .map(c => ({ id: c.id || c.name, name: c.name, tokens: c.tokens, kind: c.kind })),
-      memoryFiles: (u.memoryFiles || []).map(f => ({ path: shortPath(f.path), tokens: f.tokens })),
-    };
-    a.ctxPct = r.ctx.percentage; saveRoster(); emitAgent(a);
-  } catch { /* older CLI or session already closed */ }
-  return r.ctx;
-}
-
-// Approvals and questions: the SDK waits on this promise until the browser answers.
-function askUser(a, toolName, input, o) {
-  const r = rt(a.id);
-  const id = crypto.randomUUID();
-  const isAsk = toolName === 'AskUserQuestion';
-  const item = isAsk
-    ? { k: 'ask', id, questions: input.questions || [], state: 'pending' }
-    : { k: 'perm', id, toolName, summary: toolSummary(toolName, input, a.cwd), input, title: o.title || '', description: o.description || '',
-        reason: o.decisionReason || '', canAlways: !!(o.suggestions && o.suggestions.length), state: 'pending' };
-  addItem(a, item);
-  return new Promise(resolve => {
-    const done = (result, state) => {
-      if (!r.pending.delete(id)) return;
-      item.state = state; updateItem(a, item);
-      if (r.pending.size === 0 && r.status === 'need') setStatus(a, 'work', a.last); else emitAgent(a);
-      resolve(result);
-    };
-    r.pending.set(id, {
-      item,
-      allow: always => done({ behavior: 'allow', updatedInput: input, ...(always && o.suggestions ? { updatedPermissions: o.suggestions } : {}) }, always ? 'always' : 'allowed'),
-      deny: msg => done({ behavior: 'deny', message: msg || 'The user denied this action.' }, 'denied'),
-      answer: answers => { item.answers = answers; done({ behavior: 'allow', updatedInput: { ...input, answers } }, 'answered'); },
-      cancel: () => done({ behavior: 'deny', message: 'Cancelled.' }, 'cancelled'),
-    });
-    o.signal?.addEventListener('abort', () => r.pending.get(id)?.cancel(), { once: true });
-    setStatus(a, 'need', isAsk ? (input.questions?.[0]?.question || 'Has a question') : (o.title || `Wants to use ${toolName}: ${item.summary}`));
-  });
-}
-
-function sendMessage(a, text, images = []) {
-  const r = rt(a.id);
-  a.interrupted = false;
-  const content = [];
-  for (const im of images) content.push({ type: 'image', source: { type: 'base64', media_type: im.mediaType, data: im.data } });
-  if (text) content.push({ type: 'text', text });
-  if (!content.length) return;
-  addItem(a, { k: 'user', text, images });
-  if (!r.q) startQuery(a);
-  if (!r.q) return;
-  clearTimeout(r.idleTimer);
-  // Plain strings keep slash commands such as /compact working.
-  r.input.push({ type: 'user', message: { role: 'user', content: images.length ? content : text }, parent_tool_use_id: null });
-  setStatus(a, 'work', text.startsWith('/') ? `Running ${text.split(/\s/)[0]}` : 'Working on your message');
 }
 
 // ───────────────────────── HTTP ─────────────────────────
@@ -1048,9 +746,6 @@ function removeAgent(a) {
   const r = rt(a.id);
   const proj = projects.get(a.projectId);
   if (proj && a.title) proj.ignored = [...new Set([...(proj.ignored || []), a.title])]; // do not re-add it automatically
-  r.stopping = true;
-  for (const p of [...r.pending.values()]) p.cancel();
-  closeQuery(a);
   agents.delete(a.id); runtimes.delete(a.id);
   broadcast({ t: 'remove', agentId: a.id });
 }
@@ -1189,7 +884,6 @@ async function broadcastTo(p, ids, text) {
   const only = new Set(Array.isArray(ids) ? ids : []);
   const sent = [], skipped = [], typing = [];
   for (const a of [...agents.values()].filter(x => x.projectId === p.id && only.has(x.id))) {
-    if ((a.mode || 'own') !== 'watch') { await ensureHistory(a); sendMessage(a, text); sent.push(a.name); continue; }
     const block = typeBlock(a, false);
     if (block) { skipped.push({ name: a.name, why: block.why }); continue; }
     typing.push(a);
@@ -1322,65 +1016,36 @@ const agentRoutes = {
     const text = String(b.text || '').trim();
     const images = (Array.isArray(b.images) ? b.images : []).filter(i => i && /^image\/(png|jpeg|gif|webp)$/.test(i.mediaType) && typeof i.data === 'string').slice(0, 10);
     if (!text && !images.length) return json(res, 400, { error: 'Empty message' });
-    if (a.mode === 'watch') {
-      const block = typeBlock(a, b.force === true);
-      if (block) return json(res, 409, { error: `${a.name}: ${block.why}.`, canForce: !block.hard });
-      let line = text;
-      if (images.length) {
-        // A terminal cannot take a pasted image from here, so the image is saved and the agent is told where it is.
-        const dir = path.join(os.tmpdir(), 'agent-cockpit', a.id); fs.mkdirSync(dir, { recursive: true });
-        const paths = images.map((im, n) => { const f = path.join(dir, `${Date.now()}-${n}.${im.mediaType.split('/')[1].replace('jpeg', 'jpg')}`); fs.writeFileSync(f, Buffer.from(im.data, 'base64')); return f; });
-        line = (line ? line + ' ' : '') + paths.map(f => `[Look at this image: ${f}]`).join(' ');
-      }
-      const out = (await typeToAgents([a], line, true, b.force !== true)).get(a.id);
-      if (out === QUESTION) return json(res, 409, { error: `${a.name}: ${QUESTION_WHY}.`, canForce: true });
-      if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
-      nudgeWatch(a);
-      return json(res, 200, { ok: true, typed: true });
+    const block = typeBlock(a, b.force === true);
+    if (block) return json(res, 409, { error: `${a.name}: ${block.why}.`, canForce: !block.hard });
+    let line = text;
+    if (images.length) {
+      // A terminal cannot take a pasted image from here, so the image is saved and the agent is told where it is.
+      const dir = path.join(os.tmpdir(), 'agent-cockpit', a.id); fs.mkdirSync(dir, { recursive: true });
+      const paths = images.map((im, n) => { const f = path.join(dir, `${Date.now()}-${n}.${im.mediaType.split('/')[1].replace('jpeg', 'jpg')}`); fs.writeFileSync(f, Buffer.from(im.data, 'base64')); return f; });
+      line = (line ? line + ' ' : '') + paths.map(f => `[Look at this image: ${f}]`).join(' ');
     }
-    await ensureHistory(a);
-    sendMessage(a, text, images);
-    json(res, 200, { ok: true });
+    const out = (await typeToAgents([a], line, true, b.force !== true)).get(a.id);
+    if (out === QUESTION) return json(res, 409, { error: `${a.name}: ${QUESTION_WHY}.`, canForce: true });
+    if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
+    nudgeWatch(a);
+    json(res, 200, { ok: true, typed: true });
   },
+  // Closes the agent's terminal window, which ends the agent. Only for a window the cockpit opened.
   'POST stop': async (a, req, res) => {
-    const r = rt(a.id);
-    if (a.mode === 'watch') {
-      if (!termKnown(a) || a.term.alive === false || a.term.adopted) return json(res, 409, { error: `The cockpit did not open a window for ${a.name}, so it cannot close one. Close its terminal window yourself.` });
-      await closeWindow(a);
-      r.status = 'idle'; touch(a, 'Stopped. Its terminal window was closed.');
-      return json(res, 200, { ok: true });
-    }
-    if (r.q && (r.status === 'work' || r.status === 'need')) {
-      r.stopping = true;
-      for (const p of [...r.pending.values()]) p.cancel();
-      try { await r.q.interrupt(); } catch { /* already idle */ }
-    }
+    if (!termKnown(a) || a.term.alive === false || a.term.adopted) return json(res, 409, { error: `The cockpit did not open a window for ${a.name}, so it cannot close one. Close its terminal window yourself.` });
+    await closeWindow(a);
+    rt(a.id).status = 'idle'; touch(a, 'Stopped. Its terminal window was closed.');
     json(res, 200, { ok: true });
   },
   // Esc in the agent's window: Claude Code stops what it is doing and waits for you.
   'POST interrupt': async (a, req, res) => {
-    if ((a.mode || 'own') !== 'watch') return agentRoutes['POST stop'](a, req, res);
     const block = typeBlock(a, true);
     if (block) return json(res, 409, { error: `${a.name}: ${block.why}.` });
     const out = (await typeToAgents([a], ESC, false)).get(a.id);
     if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
     nudgeWatch(a);
     json(res, 200, { ok: true });
-  },
-  'POST decision': async (a, req, res) => {
-    const b = await readBody(req);
-    const p = rt(a.id).pending.get(b.id);
-    if (!p) return json(res, 404, { error: 'This request is no longer waiting.' });
-    if (b.decision === 'allow') p.allow(false);
-    else if (b.decision === 'always') p.allow(true);
-    else if (b.decision === 'answer') p.answer(b.answers || {});
-    else p.deny(b.message);
-    json(res, 200, { ok: true });
-  },
-  'GET context': async (a, req, res) => {
-    const r = rt(a.id);
-    const ctx = await refreshContext(a);
-    json(res, 200, { ctx: ctx || null, alive: !!r.q });
   },
   'POST settings': async (a, req, res) => {
     const b = await readBody(req);
@@ -1389,7 +1054,6 @@ const agentRoutes = {
     if (typeof b.permissionMode === 'string') await setPermissionMode(a, b.permissionMode);
     if (typeof b.model === 'string' && b.model.trim() !== (a.model || '')) {
       a.model = b.model.trim();
-      if (r.q) { try { await r.q.setModel(a.model || undefined); } catch { /* applies on next start */ } }
     }
     if (b.status === 'idle' && r.status === 'review') r.status = 'idle';
     touch(a);
@@ -1470,9 +1134,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'DELETE') {
         // Removes the project and its agents from the cockpit. Folders and session files are not touched.
         for (const a of [...agents.values()].filter(x => x.projectId === p.id)) {
-          const r = rt(a.id); r.stopping = true;
-          for (const q of [...r.pending.values()]) q.cancel();
-          closeQuery(a); agents.delete(a.id); runtimes.delete(a.id);
+          agents.delete(a.id); runtimes.delete(a.id);
           broadcast({ t: 'remove', agentId: a.id });
         }
         projects.delete(p.id); saveRoster();
@@ -1502,11 +1164,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 function shutdown() {
-  for (const a of agents.values()) {
-    const r = rt(a.id);
-    if ((a.mode || 'own') !== 'watch' && r.q && (r.status === 'work' || r.status === 'need')) a.interrupted = true;
-    r.stopping = true; a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0; closeQuery(a);
-  }
+  // Nothing to stop: every agent lives in its own terminal window and keeps running.
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ROSTER_FILE, rosterJson()); } catch { /* best effort */ }
   process.exit(0);
 }

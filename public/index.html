@@ -442,10 +442,6 @@ function renderHead() {
     mode,
     watch && a.talk && a.status === 'work' ? h('button', { class: 'btn sm', type: 'button', text: 'Interrupt', title: 'Press Esc in its terminal window: it stops what it is doing and waits for you', onclick: () => api('POST', `/api/agents/${a.id}/interrupt`).catch(x => toast(x.message)) }) : null,
     watch && a.window === 'open' && !a.adopted ? h('button', { class: 'btn sm danger', type: 'button', text: 'Close window', title: 'Close its terminal window and stop the agent', onclick: () => stopTerm(a) }) : null,
-    a.ctx != null ? h('button', { class: 'chip' + lvl(a.ctx), type: 'button', 'aria-expanded': String(S.ctxOpen), title: 'Show what fills the context', onclick: toggleCtx }, `Context ${a.ctx}%`, meter(a.ctx)) : null,
-    !watch && a.interrupted ? h('button', { class: 'btn sm primary', type: 'button', text: 'Continue', title: 'It was interrupted when the cockpit stopped', onclick: () => send(a, 'Continue where you left off.', []) }) : null,
-    !watch && a.status === 'review' ? h('button', { class: 'btn sm', type: 'button', text: 'Mark done', onclick: () => api('POST', `/api/agents/${a.id}/settings`, { status: 'idle' }).catch(x => toast(x.message)) }) : null,
-    !watch && (a.status === 'work' || a.status === 'need') ? h('button', { class: 'btn sm danger', type: 'button', text: 'Stop', onclick: () => api('POST', `/api/agents/${a.id}/stop`).catch(x => toast(x.message)) }) : null,
     h('button', { class: 'btn sm', type: 'button', text: S.detail ? 'Group steps' : 'Show all steps', title: 'Fold commands, file reads and other tool calls into one line, or show each of them', onclick: () => { S.detail = !S.detail; store.set('cockpit.detail', S.detail ? '1' : ''); renderMain(); } }),
     a.window !== 'open' ? h('button', { class: 'btn sm primary', type: 'button', text: 'Open terminal', title: 'Open a terminal window for this agent. You then talk to it there or here.', onclick: () => openTerm(a) }) : null,
     h('button', { class: 'btn sm', type: 'button', text: 'Remove', title: 'Remove from the cockpit. The session stays on disk and can be resumed.', onclick: () => { if (confirm(`Remove ${a.name} from the cockpit?\nIts session stays on disk and can be resumed later.`)) api('DELETE', `/api/agents/${a.id}`).catch(x => toast(x.message)); } }),
@@ -874,7 +870,6 @@ function viewProject() {
 }
 // All agents of the project in one list, to wake or remove the ones that are picked.
 function whereText(a) {
-  if (a.mode !== 'watch') return a.alive ? 'runs inside the cockpit' : 'inside the cockpit, not running';
   if (a.window === 'open') return 'terminal window open';
   if (a.window === 'closed') return 'terminal window closed';
   return a.asleep ? 'not running' : 'active in a terminal';
