@@ -22,7 +22,7 @@ const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_BODY = 30 * 1024 * 1024;
 const MAX_RESULT_CHARS = 6000;
 // 'bypassPermissions' is the allow-all mode: the agent runs every command and edit without asking.
-const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'];
+const PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'plan', 'dontAsk', 'bypassPermissions'];
 // Agents run on the Claude login of this PC (your subscription). An API key in the
 // environment would silently switch them to pay-per-use billing, so it is not passed on
 // unless you ask for it with COCKPIT_ALLOW_API_KEY=1.

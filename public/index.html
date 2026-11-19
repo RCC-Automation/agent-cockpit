@@ -266,7 +266,7 @@ details.peer[open] summary .t{display:none}
 'use strict';
 const ST = { need: 'Needs you', review: 'Ready to review', work: 'Working', failed: 'Failed', idle: 'Idle' };
 const ORDER = ['need', 'review', 'work', 'failed', 'idle'];
-const MODES = { default: 'Ask before edits and commands', acceptEdits: 'Accept edits, ask for commands', plan: 'Plan first, change nothing', bypassPermissions: 'Allow everything, never ask' };
+const MODES = { default: 'Ask before edits and commands', acceptEdits: 'Accept edits, ask for commands', auto: 'Auto: Claude Code judges each action itself', plan: 'Plan first, change nothing', dontAsk: 'Never ask: refuse what is not allowed in advance', bypassPermissions: 'Allow everything, never ask' };
 const ALLOW_ALL_WARNING = 'With "Allow everything" an agent runs any command and changes or deletes any file without asking you first.';
 const KCOL = ['var(--ink-2)', 'var(--review)', 'var(--work)', 'var(--need)', 'var(--done)', 'var(--ink-3)', 'var(--fail)'];
 
