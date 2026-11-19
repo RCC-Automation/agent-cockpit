@@ -857,14 +857,18 @@ public static class CockpitKeys {
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool ReadConsoleOutputCharacter(IntPtr h, System.Text.StringBuilder sb, uint len, COORD at, out uint read);
   // True when the window shows a question with a preselected answer (trust this folder, a permission,
   // the bypass warning). Enter would pick that answer, so nothing is typed.
+  // Only the last few lines with text are read: Claude Code puts the question's key hints at the bottom,
+  // and the same words inside the conversation above (an agent quoting them) must not count.
   static bool ShowsQuestion() {
     IntPtr o = CreateFile("CONOUT$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
     if (o == new IntPtr(-1)) return false;
-    SCREEN_INFO i; bool q = false;
-    if (GetConsoleScreenBufferInfo(o, out i)) for (short y = i.win.T; y <= i.win.B && !q; y++) {
+    SCREEN_INFO i; bool q = false; int seen = 0;
+    if (GetConsoleScreenBufferInfo(o, out i)) for (short y = i.win.B; y >= i.win.T && !q && seen < 4; y--) {
       var sb = new System.Text.StringBuilder(i.size.X + 1); uint n; COORD c; c.X = 0; c.Y = y;
       if (!ReadConsoleOutputCharacter(o, sb, (uint)i.size.X, c, out n)) continue;
       string line = sb.ToString(0, (int)Math.Min(n, (uint)sb.Length));
+      if (line.Trim().Length == 0) continue;
+      seen++;
       q = line.Contains("Enter to confirm") || line.Contains("Esc to cancel");
     }
     CloseHandle(o); return q;
@@ -907,20 +911,82 @@ public static class CockpitKeys {
   }
 }`;
 
-function typeIntoWindows(targets, line, enter, check) {
-  // targets: [{ id, pid, started }]; resolves to a Map of id -> 'sent' or the reason it failed
-  const script = `$ErrorActionPreference = 'Stop'\nAdd-Type -TypeDefinition @'\n${TYPE_HELPER}\n'@\n$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(line, 'utf8').toString('base64')}'))\n` +
-    targets.map(t => `$p = Get-Process -Id ${Number(t.pid)} -ErrorAction SilentlyContinue; $s = 0; if ($p) { try { $s = $p.StartTime.ToFileTimeUtc() } catch {} }\n` +
-      `if (-not $p) { Write-Output '${t.id}|its window is closed' } elseif ("$s" -ne '${String(t.started).replace(/\D/g, '')}') { Write-Output '${t.id}|its window is closed' } else { Write-Output ('${t.id}|' + [CockpitKeys]::Send(${Number(t.pid)}, $text, $${enter ? 'true' : 'false'}, $${check ? 'true' : 'false'})) }`).join('\n');
-  return new Promise(resolve => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(script)], { windowsHide: true, timeout: 60000 + targets.length * 3000 }, (err, stdout, stderr) => {
-      const out = new Map();
-      for (const l of String(stdout).split(/\r?\n/)) { const m = /^([0-9a-f-]{36})\|(.*)$/.exec(l.trim()); if (m) out.set(m[1], m[2]); }
-      const why = err ? String(stderr || err.message).split('\n').find(x => x.trim() && !x.startsWith('#<')) || 'the helper did not run' : '';
-      for (const t of targets) if (!out.has(t.id)) out.set(t.id, 'typing into the window failed' + (why ? ': ' + why.trim().slice(0, 160) : ''));
-      resolve(out);
-    });
+// One typing helper keeps running in the background. Starting PowerShell and compiling the helper took
+// several seconds per message on this PC (every program start is scanned), so it is done once. Messages
+// go through it one at a time, in order, so two sends can never mix their keys.
+// Protocol, one line each way: "<req>|<pid>|<started>|<enter 0/1>|<check 0/1>|<text base64>" -> "<req>|<result>".
+const TYPER_SCRIPT = `$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+${TYPE_HELPER}
+'@
+[Console]::Out.WriteLine('READY'); [Console]::Out.Flush()
+while ($null -ne ($l = [Console]::In.ReadLine())) {
+  $f = $l.Split('|'); $r = ''
+  try {
+    $tp = [uint32]$f[1]; $p = Get-Process -Id $tp -ErrorAction SilentlyContinue; $s = 0
+    if ($p) { try { $s = $p.StartTime.ToFileTimeUtc() } catch {} }
+    if (-not $p -or "$s" -ne $f[2]) { $r = 'its window is closed' }
+    else { $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($f[5])); $r = [CockpitKeys]::Send($tp, $text, $f[3] -eq '1', $f[4] -eq '1') }
+  } catch { $r = 'typing into the window failed: ' + $_.Exception.Message }
+  [Console]::Out.WriteLine($f[0] + '|' + $r); [Console]::Out.Flush()
+}`;
+const typer = { proc: null, ready: null, waiting: new Map(), seq: 0, chain: Promise.resolve() };
+function typerStart() {
+  if (typer.proc) return typer.ready;
+  const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(TYPER_SCRIPT)], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  typer.proc = proc;
+  let buf = '', err = '', readyOk;
+  typer.ready = new Promise((ok, fail) => {
+    readyOk = ok;
+    setTimeout(() => fail(new Error('the typing helper did not start in time')), 60000);
   });
+  typer.ready.catch(() => {});
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', d => {
+    buf += d; let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (l === 'READY') { readyOk(); continue; }
+      const m = /^(\d+)\|(.*)$/.exec(l);
+      if (m && typer.waiting.has(m[1])) { typer.waiting.get(m[1])(m[2]); typer.waiting.delete(m[1]); }
+    }
+  });
+  proc.stderr.setEncoding('utf8');
+  proc.stderr.on('data', d => { err = (err + d).slice(-2000); });
+  const gone = () => {
+    if (typer.proc !== proc) return;
+    typer.proc = null; typer.ready = null;
+    const why = err.split('\n').find(x => x.trim() && !x.startsWith('#<'));
+    for (const [, done] of typer.waiting) done('typing into the window failed: the helper stopped' + (why ? ' (' + why.trim().slice(0, 160) + ')' : ''));
+    typer.waiting.clear();
+  };
+  proc.on('exit', gone); proc.on('error', gone);
+  return typer.ready;
+}
+function typeOne(t, line, enter, check) {
+  const run = async () => {
+    try { await typerStart(); } catch (e) { if (typer.proc) typer.proc.kill(); return 'typing into the window failed: ' + e.message; }
+    const id = String(++typer.seq);
+    return new Promise(done => {
+      const timer = setTimeout(() => { if (typer.waiting.delete(id)) { done('typing into the window failed: no answer from the helper'); if (typer.proc) typer.proc.kill(); } }, 20000 + line.length * 5);
+      typer.waiting.set(id, r => { clearTimeout(timer); done(r); });
+      typer.proc.stdin.write(`${id}|${Number(t.pid)}|${String(t.started).replace(/\D/g, '')}|${enter ? 1 : 0}|${check ? 1 : 0}|${Buffer.from(line, 'utf8').toString('base64')}\n`);
+    });
+  };
+  const p = typer.chain.then(run, run);
+  typer.chain = p.catch(() => {});
+  return p;
+}
+// A window that has just opened is still starting Claude Code; keys typed then can lose their Enter
+// (seen at 9 s, fine at 20 s). Wait until the window is old enough.
+const WINDOW_WARMUP_MS = 20000;
+async function typeIntoWindows(targets, line, enter, check) {
+  // targets: [{ id, pid, started, openedAt }]; resolves to a Map of id -> 'sent' or the reason it failed
+  const wait = Math.max(0, ...targets.map(t => (t.openedAt || 0) + WINDOW_WARMUP_MS - Date.now()));
+  if (wait > 0) await new Promise(r => setTimeout(r, Math.min(wait, WINDOW_WARMUP_MS)));
+  const out = new Map();
+  for (const t of targets) out.set(t.id, await typeOne(t, line, enter, check));
+  return out;
 }
 
 const ESC = String.fromCharCode(27);
@@ -961,7 +1027,7 @@ async function typeToAgents(list, text, enter = true, check = false) {
   // Tested on Windows 11: the console turns an emoji typed as keys into broken characters, whatever the
   // order of the key events. Accented letters are fine. So emoji are left out of typed text.
   const keys = line.replace(/[\u{10000}-\u{10FFFF}]️?/gu, '').replace(/ {2,}/g, ' ');
-  if (win.length) for (const [id, res] of await typeIntoWindows(win.map(a => ({ id: a.id, pid: a.term.pid, started: a.term.started })), keys, enter, check)) out.set(id, res);
+  if (win.length) for (const [id, res] of await typeIntoWindows(win.map(a => ({ id: a.id, pid: a.term.pid, started: a.term.started, openedAt: a.term.adopted ? 0 : a.term.openedAt })), keys, enter, check)) out.set(id, res);
   return out;
 }
 function nudgeWatch(a) { rt(a.id).viewedAt = Date.now(); for (const ms of [900, 2200, 4500]) setTimeout(() => pollWatched(a).catch(() => {}), ms); }
@@ -1311,6 +1377,8 @@ function start() {
     setTimeout(checkWindows, 1500);
     setInterval(adoptWindows, 20000);
     setTimeout(adoptWindows, 4000);
+    // Start the typing helper now, so the first message does not wait for it (it takes 10 to 45 s here).
+    if (process.platform === 'win32') setTimeout(() => typerStart().catch(() => {}), 6000);
     console.log(`\n  Agent Cockpit is running:  ${shownUrl()}${TOKEN ? '?token=…' : ''}`);
     console.log(`  ${projects.size} project(s), ${agents.size} agent(s) · data in ${DATA_DIR}`);
     console.log('  Agents in terminal windows keep running when the cockpit stops.');
