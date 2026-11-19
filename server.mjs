@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { exec } from 'node:child_process';
+import { exec, execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { query, listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 
@@ -122,7 +122,7 @@ function publicAgent(a) {
   const r = rt(a.id);
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
-    sessionId: a.sessionId || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
+    sessionId: a.sessionId || null, window: a.term && a.term.pid ? (a.term.alive === false ? 'closed' : 'open') : null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
     login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
@@ -385,8 +385,9 @@ async function pollWatched(a) {
     if (t.cost != null) w.cost = t.cost;
   }
   if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
-  const s = watchState(w.info, Date.now() - w.mtime);
+  let s = watchState(w.info, Date.now() - w.mtime);
   if (!s) return;
+  if (a.term && a.term.alive === false && (s[0] === 'work' || s[0] === 'need')) s = ['idle', 'Its terminal window is closed.'];
   const last = s[1] == null ? (a.last || '') : s[1].replace(/\s+/g, ' ').slice(0, 200);
   const at = Math.round(w.mtime);
   if (r.status !== s[0] || a.last !== last || a.updatedAt !== at) {
@@ -452,35 +453,82 @@ function claudeArgs(a, firstMessage) {
   return args;
 }
 
-function terminalCommand(a, firstMessage) {
-  const args = claudeArgs(a, firstMessage);
-  const extra = (process.env.COCKPIT_CLAUDE_ARGS || '').trim();
-  const title = (a.title || a.name).replace(/[^\w .-]/g, '').slice(0, 40) || 'agent';
-  if (process.platform === 'win32') {
-    // The script travels base64-encoded, so no quoting can break on its way through cmd.exe.
-    const script = `$Host.UI.RawUI.WindowTitle = ${psQuote(title)}; Set-Location -LiteralPath ${psQuote(a.cwd)}; claude ${args.map(psQuote).join(' ')}${extra ? ' ' + extra : ''}`;
-    const enc = Buffer.from(script, 'utf16le').toString('base64');
-    const shell = process.env.COCKPIT_SHELL || 'powershell.exe';
-    return (process.env.COCKPIT_TERMINAL || '').toLowerCase() === 'wt'
-      ? `wt.exe -w 0 new-tab --title "${title}" ${shell} -NoExit -EncodedCommand ${enc}`
-      : `start "${title}" ${shell} -NoExit -EncodedCommand ${enc}`;
-  }
-  const line = `cd ${shQuote(a.cwd)} && claude ${args.map(shQuote).join(' ')}${extra ? ' ' + extra : ''}`;
-  if (process.platform === 'darwin') {
-    return `osascript -e ${shQuote(`tell application "Terminal" to do script ${JSON.stringify(line)}`)} -e ${shQuote('tell application "Terminal" to activate')}`;
-  }
-  return `${process.env.COCKPIT_TERMINAL || 'x-terminal-emulator'} -e bash -lc ${shQuote(line + '; exec bash')}`;
+const b64ps = t => Buffer.from(t, 'utf16le').toString('base64');
+const termTitle = a => (a.title || a.name).replace(/[^\w .-]/g, '').slice(0, 40) || 'agent';
+const extraArgs = () => { const e = (process.env.COCKPIT_CLAUDE_ARGS || '').trim(); return e ? ' ' + e : ''; };
+
+// What the PowerShell window runs. It travels base64-encoded, so no quoting can break on the way.
+function terminalScript(a, firstMessage) {
+  return `$Host.UI.RawUI.WindowTitle = ${psQuote(termTitle(a))}; Set-Location -LiteralPath ${psQuote(a.cwd)}; claude ${claudeArgs(a, firstMessage).map(psQuote).join(' ')}${extraArgs()}`;
+}
+function shellLine(a, firstMessage) {
+  return `cd ${shQuote(a.cwd)} && claude ${claudeArgs(a, firstMessage).map(shQuote).join(' ')}${extraArgs()}`;
 }
 
+// Opens the window and remembers which process it is, so the cockpit can tell whether it is
+// still open and can close it when asked. Windows that the person opened themselves are never touched.
 function openTerminal(a, firstMessage) {
   const env = agentEnv(); delete env.CLAUDE_AGENT_SDK_CLIENT_APP;
-  const command = terminalCommand(a, firstMessage);
+  const fail = (reject, what) => reject(new Error('Could not open a terminal window: ' + String(what || 'no answer').split('\n')[0]));
+  const shell = process.env.COCKPIT_SHELL || 'powershell.exe';
+  const useWt = (process.env.COCKPIT_TERMINAL || '').toLowerCase() === 'wt';
+  a.term = null;
   return new Promise((resolve, reject) => {
-    exec(command, { cwd: a.cwd, env, windowsHide: true }, err => {
-      if (err) reject(new Error('Could not open a terminal window: ' + String(err.message).split('\n').slice(0, 2).join(' ')));
-      else resolve();
-    });
-    setTimeout(resolve, 900); // a window that stays open keeps the command running; only a quick failure is an error
+    if (process.platform === 'win32' && !useWt) {
+      const outer = `$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath ${psQuote(shell)} -ArgumentList @('-NoExit','-EncodedCommand',${psQuote(b64ps(terminalScript(a, firstMessage)))}) ` +
+        `-WorkingDirectory ${psQuote(a.cwd)} -WindowStyle Normal -PassThru; $t = 0; try { $t = $p.StartTime.ToFileTimeUtc() } catch {}; Write-Output "$($p.Id),$t"`;
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(outer)], { env, windowsHide: true, timeout: 30000 }, (err, stdout, stderr) => {
+        const m = /(\d+),(\d+)/.exec(String(stdout));
+        if (err || !m) return fail(reject, err ? err.message : stderr);
+        a.term = { pid: Number(m[1]), started: m[2], image: path.basename(shell).toLowerCase(), alive: true };
+        saveRoster(); resolve();
+      });
+    } else if (process.platform === 'win32') {
+      exec(`wt.exe -w 0 new-tab --title "${termTitle(a)}" ${shell} -NoExit -EncodedCommand ${b64ps(terminalScript(a, firstMessage))}`, { cwd: a.cwd, env, windowsHide: true }, err => err ? fail(reject, err.message) : resolve());
+    } else if (process.platform === 'darwin') {
+      const line = shellLine(a, firstMessage);
+      exec(`osascript -e ${shQuote(`tell application "Terminal" to do script ${JSON.stringify(line)}`)} -e ${shQuote('tell application "Terminal" to activate')}`, { env }, err => err ? fail(reject, err.message) : resolve());
+    } else {
+      const child = spawn(process.env.COCKPIT_TERMINAL || 'x-terminal-emulator', ['-e', 'bash', '-lc', shellLine(a, firstMessage) + '; exec bash'], { cwd: a.cwd, env, detached: true, stdio: 'ignore' });
+      child.on('error', e => fail(reject, e.message));
+      child.on('spawn', () => { a.term = { pid: child.pid, started: '0', image: '', alive: true }; child.unref(); saveRoster(); resolve(); });
+    }
+  });
+}
+
+function setWindowAlive(a, alive) {
+  if (!a.term || a.term.alive === alive) return;
+  a.term.alive = alive; saveRoster(); emitAgent(a);
+}
+// Which of the windows the cockpit opened are still there.
+function checkWindows() {
+  const tracked = [...agents.values()].filter(a => a.term && a.term.pid && a.term.alive !== false);
+  if (!tracked.length) return;
+  if (process.platform !== 'win32') {
+    for (const a of tracked) { let alive = true; try { process.kill(a.term.pid, 0); } catch { alive = false; } setWindowAlive(a, alive); }
+    return;
+  }
+  execFile('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 15000 }, (err, stdout) => {
+    if (err) return;
+    const live = new Map();
+    for (const line of String(stdout).split(/\r?\n/)) { const m = /^"([^"]+)","(\d+)"/.exec(line); if (m) live.set(Number(m[2]), m[1].toLowerCase()); }
+    for (const a of tracked) setWindowAlive(a, live.get(a.term.pid) === a.term.image);
+  });
+}
+// Closes a window the cockpit opened, together with the Claude Code running in it.
+function closeWindow(a) {
+  const t = a.term;
+  if (!t || !t.pid || t.alive === false) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const done = ok => { setWindowAlive(a, false); resolve(ok); };
+    if (process.platform !== 'win32') {
+      try { process.kill(-t.pid, 'SIGTERM'); } catch { try { process.kill(t.pid, 'SIGTERM'); } catch { /* already gone */ } }
+      return done(true);
+    }
+    // Only if it is still the very process the cockpit started (same id and same start time).
+    const script = `$p = Get-Process -Id ${Number(t.pid)} -ErrorAction SilentlyContinue; if (-not $p) { 'gone' } else { $s = 0; try { $s = $p.StartTime.ToFileTimeUtc() } catch {}; ` +
+      `if ("$s" -eq '${String(t.started).replace(/\D/g, '')}') { & taskkill.exe /PID ${Number(t.pid)} /T /F | Out-Null; 'closed' } else { 'other' } }`;
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(script)], { windowsHide: true, timeout: 20000 }, (err, stdout) => done(!err && /closed|gone/.test(String(stdout))));
   });
 }
 
@@ -811,7 +859,28 @@ async function importNamed(proj, list) {
   return added;
 }
 
+// Stops the cockpit itself. Agents in terminal windows are not touched. Agents that run inside the
+// cockpit would stop with it, so they are moved to terminal windows first.
+async function handOverAll() {
+  const moved = [];
+  for (const a of [...agents.values()]) {
+    if (a.mode === 'watch' || !a.sessionId || !rt(a.id).q) continue;
+    try { await releaseAgent(a, 'Moved to a terminal window.'); await openTerminal(a); moved.push(a.name); }
+    catch (e) { console.error(`[shutdown] ${a.name}: ${e.message}`); }
+  }
+  return moved;
+}
+
 const routes = {
+  'GET /api/health': async (req, res) => json(res, 200, { ok: true, app: 'agent-cockpit' }),
+  'POST /api/shutdown': async (req, res) => {
+    const b = await readBody(req);
+    const moved = b.handover === false ? [] : await handOverAll();
+    json(res, 200, { ok: true, moved });
+    broadcast({ t: 'shutdown' });
+    console.log('Shut down on request.' + (moved.length ? ' Moved to terminal windows: ' + moved.join(', ') : ''));
+    setTimeout(shutdown, 500);
+  },
   'GET /api/state': async (req, res) => {
     json(res, 200, { projects: [...projects.values()].map(publicProject), agents: [...agents.values()].map(publicAgent), home: os.homedir(), platform: process.platform, tokenRequired: !!TOKEN });
   },
@@ -933,6 +1002,12 @@ const agentRoutes = {
   },
   'POST stop': async (a, req, res) => {
     const r = rt(a.id);
+    if (a.mode === 'watch') {
+      if (!a.term || !a.term.pid || a.term.alive === false) return json(res, 409, { error: `The cockpit did not open a window for ${a.name}, so it cannot close one. Close its terminal window yourself.` });
+      await closeWindow(a);
+      r.status = 'idle'; touch(a, 'Stopped. Its terminal window was closed.');
+      return json(res, 200, { ok: true });
+    }
     if (r.q && (r.status === 'work' || r.status === 'need')) {
       r.stopping = true;
       for (const p of [...r.pending.values()]) p.cancel();
@@ -977,6 +1052,7 @@ const agentRoutes = {
   'POST takeover': async (a, req, res) => {
     const r = rt(a.id);
     if (a.mode === 'watch') {
+      if (await closeWindow(a)) await new Promise(done => setTimeout(done, 900)); // its window is closed first
       await loadWatched(a, true);
       a.mode = 'own'; r.status = 'idle'; r.historyLoaded = true;
       note(a, 'Taken over by the cockpit. Write here from now on, not in the terminal.');
@@ -1066,26 +1142,94 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-loadRoster();
-setInterval(watchTick, WATCH_MS);
-setInterval(scanProjects, SCAN_MS);
-setTimeout(scanProjects, 800);
-server.listen(PORT, HOST, () => {
-  const shown = LOOPBACK.has(HOST) ? 'localhost' : HOST;
-  const url = `http://${shown}:${PORT}/`;
-  console.log(`\n  Agent Cockpit is running:  ${url}${TOKEN ? '?token=…' : ''}`);
-  console.log(`  ${projects.size} project(s), ${agents.size} agent(s) · data in ${DATA_DIR}`);
-  console.log('  Keep this window open. Press Ctrl+C to stop.\n');
-  if (process.argv.includes('--open')) {
-    const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
-    exec(cmd, () => {});
-  }
-});
-
 function shutdown() {
   for (const a of agents.values()) { const r = rt(a.id); r.stopping = true; a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0; closeQuery(a); }
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ROSTER_FILE, rosterJson()); } catch { /* best effort */ }
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+
+const shownUrl = () => `http://${LOOPBACK.has(HOST) ? 'localhost' : HOST}:${PORT}/`;
+function openBrowser(url) {
+  exec(process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`, () => {});
+}
+// Talks to a cockpit that is already running on this PC (used by --stop, --ping and --wait).
+function localCall(method, p, body, timeout = 4000) {
+  return new Promise(resolve => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request({ host: '127.0.0.1', port: PORT, path: p, method, timeout, headers: {
+      host: `localhost:${PORT}`,
+      ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}),
+      ...(TOKEN ? { cookie: `cockpit=${encodeURIComponent(TOKEN)}` } : {}) } }, res => {
+      let out = ''; res.on('data', c => { out += c; });
+      res.on('end', () => { let j = null; try { j = JSON.parse(out); } catch { /* not ours */ } resolve({ status: res.statusCode, json: j }); });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
+const isUp = async () => { const r = await localCall('GET', '/api/health'); return !!(r && r.status === 200 && r.json && r.json.app === 'agent-cockpit'); };
+
+// The cockpit also writes what it prints to data/cockpit.log, because it normally runs without a window.
+function teeLog() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const file = path.join(DATA_DIR, 'cockpit.log');
+    try { if (fs.statSync(file).size > 1_000_000) fs.renameSync(file, file + '.old'); } catch { /* no log yet */ }
+    const out = fs.createWriteStream(file, { flags: 'a' });
+    out.on('error', () => {});
+    for (const k of ['log', 'error']) {
+      const orig = console[k].bind(console);
+      console[k] = (...args) => {
+        orig(...args);
+        const text = args.map(x => typeof x === 'string' ? x : (x && x.stack) || JSON.stringify(x)).join(' ').trim();
+        if (text) out.write(`[${new Date().toISOString()}] ${text}\n`);
+      };
+    }
+  } catch { /* logging is optional */ }
+}
+
+function start() {
+  teeLog();
+  server.on('error', e => {
+    if (e.code === 'EADDRINUSE') {
+      console.log(`Cockpit is already running at ${shownUrl()}`);
+      if (process.argv.includes('--open')) openBrowser(shownUrl());
+      return setTimeout(() => process.exit(0), 400);
+    }
+    console.error(e); process.exit(1);
+  });
+  server.listen(PORT, HOST, () => {
+    loadRoster();
+    setInterval(watchTick, WATCH_MS);
+    setInterval(scanProjects, SCAN_MS);
+    setInterval(checkWindows, 8000);
+    setTimeout(scanProjects, 800);
+    setTimeout(checkWindows, 1500);
+    console.log(`\n  Agent Cockpit is running:  ${shownUrl()}${TOKEN ? '?token=…' : ''}`);
+    console.log(`  ${projects.size} project(s), ${agents.size} agent(s) · data in ${DATA_DIR}`);
+    console.log('  Agents in terminal windows keep running when the cockpit stops.');
+    console.log('  Stop the cockpit with Shut down in the page, with stop.cmd, or with Ctrl+C here.\n');
+    if (process.argv.includes('--open')) openBrowser(shownUrl());
+  });
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+if (process.argv.includes('--stop')) {
+  const r = await localCall('POST', '/api/shutdown', { handover: true }, 120000);
+  if (r && r.status === 200) console.log('Cockpit stopped.' + (r.json && r.json.moved && r.json.moved.length ? ' Moved to terminal windows: ' + r.json.moved.join(', ') + '.' : ''));
+  else console.log('Cockpit was not running.');
+  process.exit(0);
+} else if (process.argv.includes('--ping')) {
+  process.exit(await isUp() ? 0 : 1);
+} else if (process.argv.includes('--wait')) {
+  for (let i = 0; i < 40; i++) {
+    if (await isUp()) { console.log(`  Cockpit is running: ${shownUrl()}`); process.exit(0); }
+    await new Promise(done => setTimeout(done, 500));
+  }
+  process.exit(1);
+} else {
+  start();
+}

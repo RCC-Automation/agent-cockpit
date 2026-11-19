@@ -9,7 +9,7 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Take over.** Close an agent in its terminal, click Take over, and it continues in the cockpit with its full history.
   Release hands it back to a terminal.
 - **Sessions.** Every earlier session of the folder can be watched or taken over.
-- **Terminal windows.** Start a new agent in a PowerShell window, or reopen any agent in one with Open in terminal.
+- **Terminal windows.** New agents start in a PowerShell window by default. Reopen any agent in one with Open terminal.
   The window runs the normal Claude Code, and the cockpit shows the same agent live.
 - **Chat.** Live streaming answers and images (attach, paste or drop). Commands, file reads and other tool calls are
   folded into one line between the messages; click it, or use Show all steps, to see them. Messages from other agents
@@ -17,14 +17,20 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Approvals and questions.** Allow once, always allow, or deny. Answer questions with one click.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.
 - **Context.** A meter per agent, a breakdown of what fills it, and a Compact button.
-- **Stop.** Interrupt an agent in the middle of a turn.
+- **Stop.** Only on request. Stop closes the PowerShell window of an agent the cockpit opened, or interrupts the turn
+  of an agent that runs inside the cockpit. The cockpit never closes a window you opened yourself.
 
 ## Start
 
 You need Node.js 18 or newer (`node -v`).
 
 On Windows, double-click **`start.cmd`**. The first start installs what it needs, then the cockpit opens at
-http://localhost:4600/.
+http://localhost:4600/. It runs in the background without a window of its own.
+
+**Closing a window stops nothing.** You can close the browser and the start window. Agents in PowerShell windows are
+independent of the cockpit and keep running even when the cockpit is shut down. To stop the cockpit itself, click
+**Shut down** in the page or run **`stop.cmd`**. Agents that run inside the cockpit are moved to PowerShell windows
+first, so they keep running too.
 
 From a terminal instead:
 
@@ -36,7 +42,7 @@ npm install
 npm start
 ```
 
-Keep the window open while you use the cockpit. Agents keep running when you close the browser tab.
+Started this way from a terminal, the cockpit runs in that terminal and stops with Ctrl+C.
 
 ## Login
 
@@ -55,7 +61,7 @@ To use your installed Claude Code instead of the bundled one, set `COCKPIT_CLAUD
 - Each agent is one Claude Code session started in its project folder. It loads your normal settings,
   `CLAUDE.md`, skills and plugins (including ECC), exactly as `claude` does in that folder.
 - Every agent is told its own name, the project it belongs to, and who its teammates are.
-- The roster is saved in `data/roster.json`. Chat history is read from Claude Code's own session files,
+- The roster is saved in `data/roster.json` and the cockpit's own log in `data/cockpit.log`. Chat history is read from Claude Code's own session files,
   so nothing is lost when the cockpit restarts.
 - An agent's process is closed after 20 idle minutes to save memory. It resumes on your next message.
 - A watched agent is read from the session file Claude Code keeps on disk. Its status is derived from that file:

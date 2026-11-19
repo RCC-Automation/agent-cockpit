@@ -190,6 +190,7 @@ details.peer[open] summary .t{display:none}
   <span class="counts" id="counts"></span>
   <span class="conn" id="conn" hidden>reconnecting…</span>
   <button class="btn sm" id="btn-notify" type="button" hidden>Notify me</button>
+  <button class="btn sm" id="btn-off" type="button" title="Stop the cockpit itself. Agents in terminal windows keep running.">Shut down</button>
   <button class="btn" id="btn-resume" type="button">Sessions</button>
   <button class="btn primary" id="btn-new" type="button">+ New agent</button>
 </div>
@@ -361,7 +362,8 @@ function renderHead() {
     pill(a.status),
     h('span', { class: 'meta', text: [sub, watch ? null : (a.modelResolved || a.model || 'default model'), a.login && !a.login.api ? a.login.label : null, a.cost ? '$' + a.cost.toFixed(2) : null].filter(Boolean).join(' · '), title: a.cwd }),
     a.login && a.login.api ? h('span', { class: 'pill s-failed', text: a.login.label, title: 'This agent is not using your Claude subscription' }) : null,
-    watch ? h('span', { class: 'pill s-idle', text: 'runs in a terminal', title: 'The cockpit shows this agent live but does not write to it' }) : mode,
+    watch ? h('span', { class: 'pill s-idle', text: a.window === 'closed' ? 'terminal window closed' : a.window === 'open' ? 'runs in its terminal window' : 'runs in a terminal', title: 'The cockpit shows this agent live but does not write to it' }) : mode,
+    watch && a.window === 'open' ? h('button', { class: 'btn sm danger', type: 'button', text: 'Stop', title: 'Close its terminal window and stop the agent', onclick: () => stopTerm(a) }) : null,
     a.ctx != null ? h('button', { class: 'chip' + lvl(a.ctx), type: 'button', 'aria-expanded': String(S.ctxOpen), title: 'Show what fills the context', onclick: toggleCtx }, `Context ${a.ctx}%`, meter(a.ctx)) : null,
     !watch && a.status === 'review' ? h('button', { class: 'btn sm', type: 'button', text: 'Mark done', onclick: () => api('POST', `/api/agents/${a.id}/settings`, { status: 'idle' }).catch(x => toast(x.message)) }) : null,
     !watch && (a.status === 'work' || a.status === 'need') ? h('button', { class: 'btn sm danger', type: 'button', text: 'Stop', onclick: () => api('POST', `/api/agents/${a.id}/stop`).catch(x => toast(x.message)) }) : null,
@@ -500,9 +502,16 @@ function onDelta(agentId, id, text) {
 // ───────── agents that run in a terminal ─────────
 function takeover(a) {
   const fresh = Date.now() - (a.updatedAt || 0) < 60000;
-  if (!confirm(`Take over ${a.name}?\n\nClose it in its terminal first: type /exit, or press Ctrl+C twice.` +
-    (fresh ? '\n\nIt was active less than a minute ago, so it is probably still running.' : '') + '\n\nPress OK when the terminal is closed.')) return;
+  const msg = a.window === 'open'
+    ? `Take over ${a.name}?\n\nThe cockpit closes its terminal window and continues the agent here.\nFrom then on it runs inside the cockpit and stops when you shut the cockpit down.`
+    : `Take over ${a.name}?\n\nIf it still has a terminal window, close that first: type /exit, or press Ctrl+C twice.` +
+      (fresh ? '\n\nIt was active less than a minute ago, so it is probably still running.' : '') + '\n\nPress OK when no terminal is running it.';
+  if (!confirm(msg)) return;
   api('POST', `/api/agents/${a.id}/takeover`).catch(x => toast(x.message));
+}
+function stopTerm(a) {
+  if (!confirm(`Stop ${a.name}?\n\nThis closes its terminal window. Its session is kept, and Open terminal continues it later.`)) return;
+  api('POST', `/api/agents/${a.id}/stop`).catch(x => toast(x.message));
 }
 function release(a) {
   if (!confirm(`Release ${a.name} back to a terminal?\nThe cockpit stops running it and only watches.`)) return;
@@ -511,14 +520,17 @@ function release(a) {
 function openTerm(a) {
   const watch = a.mode === 'watch', fresh = Date.now() - (a.updatedAt || 0) < 180000;
   const msg = watch
-    ? (fresh ? `${a.name} was active in the last three minutes, so its terminal is probably still open.\nOpen another window anyway?` : null)
+    ? (a.window === 'open' ? `${a.name} already has a terminal window open.\nOpen a second one anyway?`
+      : a.window !== 'closed' && fresh ? `${a.name} was active in the last three minutes, so its terminal is probably still open.\nOpen another window anyway?` : null)
     : `Continue ${a.name} in a terminal window?\nThe cockpit stops running it and shows it live. You then write to it in the terminal.`;
   if (msg && !confirm(msg)) return;
   api('POST', `/api/agents/${a.id}/terminal`).then(() => toast('Terminal window opened for ' + a.name + '.')).catch(x => toast(x.message));
 }
 function watchBar(a) {
   return h('div', { class: 'composer watchbar' },
-    h('span', { text: `${a.name} runs in a terminal. You see it live here, and you write to it there. To write to it from the cockpit instead, close its terminal and take it over.` }),
+    h('span', { text: a.window === 'closed'
+      ? `${a.name}'s terminal window is closed. Open terminal continues it in a new window.`
+      : `${a.name} runs in a terminal. You see it live here, and you write to it there. It keeps running when the cockpit is closed.` }),
     h('button', { class: 'btn', type: 'button', text: 'Open terminal', title: 'Open a terminal window for this agent, for example after its window was closed', onclick: () => openTerm(a) }),
     h('button', { class: 'btn primary', type: 'button', text: 'Take over', onclick: () => takeover(a) }));
 }
@@ -626,12 +638,12 @@ function viewNew() {
   const mode = h('select', { id: 'new-mode' }, Object.entries(MODES).map(([k, v]) => h('option', { value: k, text: v })));
   const first = h('textarea', { id: 'new-first', rows: 3, placeholder: 'Optional. What should it start with?' });
   const win = S.platform === 'win32' ? 'PowerShell window' : 'terminal window';
-  const where = h('select', { id: 'new-where' }, [['cockpit', 'In the cockpit: you write here, no window'], ['terminal', `In a ${win}: you write there, the cockpit shows it live`]]
-    .map(([v, t]) => h('option', { value: v, text: t, selected: store.get('cockpit.where') === v })));
+  const where = h('select', { id: 'new-where' }, [['terminal', `In a ${win}: you write there, the cockpit shows it live, it keeps running without the cockpit`], ['cockpit', 'Inside the cockpit: you write here, no window, it runs only while the cockpit runs']]
+    .map(([v, t]) => h('option', { value: v, text: t, selected: (store.get('cockpit.where2') || 'terminal') === v })));
   const form = h('form', { class: 'form', onsubmit: async e => {
     e.preventDefault(); err.textContent = '';
     try {
-      store.set('cockpit.where', where.value);
+      store.set('cockpit.where2', where.value);
       const d = await api('POST', '/api/agents', { projectId: p.id, name: name.value, model: model.value === 'custom' ? custom.value : model.value, permissionMode: mode.value, firstMessage: first.value, where: where.value });
       if (d.hint) toast(d.hint);
       S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar();
@@ -643,7 +655,7 @@ function viewNew() {
     h('label', { class: 'wide' }, 'First message', first), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Launch' }), h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') })));
   setTimeout(() => name.focus(), 0);
-  return h('div', { class: 'pane' }, h('h2', { text: 'New agent' }), h('span', { class: 'sub', text: 'The agent starts in the project folder with your normal Claude Code settings, skills and plugins.' }), form);
+  return h('div', { class: 'pane' }, h('h2', { text: 'New agent' }), h('span', { class: 'sub', text: 'The agent starts in the project folder with your normal Claude Code settings, skills and plugins. In a terminal window it is independent of the cockpit.' }), form);
 }
 function viewResume() {
   const p = curProject(); const list = h('div', { class: 'list' }, h('span', { class: 'sub', text: 'Loading sessions…' }));
@@ -726,7 +738,7 @@ function onAgent(a) {
     try { new Notification(`${a.name} · ${ST[a.status]}`, { body: a.last || '', tag: a.id }); } catch {}
   }
   renderBar(); renderRail();
-  if (a.id === S.cur && S.view === 'chat') { if (!els.head || (before && before.mode !== a.mode)) renderMain(); else renderHead(); }
+  if (a.id === S.cur && S.view === 'chat') { if (!els.head || (before && (before.mode !== a.mode || before.window !== a.window))) renderMain(); else renderHead(); }
 }
 async function refresh() {
   const d = await api('GET', '/api/state');
@@ -748,6 +760,7 @@ function connect() {
     else if (ev.t === 'item') upsertItem(ev.agentId, ev.item);
     else if (ev.t === 'delta') onDelta(ev.agentId, ev.id, ev.text);
     else if (ev.t === 'commands') S.commands.set(ev.agentId, ev.commands);
+    else if (ev.t === 'shutdown') { es.close(); stopped(); }
     else if (ev.t === 'reset') { S.items.delete(ev.agentId); if (ev.agentId === S.cur && S.view === 'chat') renderMain(); }
     else if (ev.t === 'remove') { S.agents.delete(ev.agentId); S.items.delete(ev.agentId); if (S.cur === ev.agentId) selectProject(S.project); else { renderBar(); renderRail(); } }
     else if (ev.t === 'project') { const i = S.projects.findIndex(p => p.id === ev.project.id); if (i >= 0) S.projects[i] = ev.project; else S.projects.push(ev.project); renderBar(); }
@@ -759,6 +772,17 @@ $('btn-project').addEventListener('click', () => go('project'));
 $('btn-new').addEventListener('click', () => go('new'));
 $('btn-resume').addEventListener('click', () => go('resume'));
 $('btn-notify').addEventListener('click', () => Notification.requestPermission().then(renderBar));
+function stopped() {
+  document.title = 'Cockpit (stopped)';
+  document.querySelector('.body').replaceChildren(h('div', { class: 'pane', style: 'grid-column:1 / -1' }, h('h2', { text: 'The cockpit is shut down' }),
+    h('span', { class: 'sub', text: 'Agents in terminal windows are still running. Start the cockpit again with start.cmd and it shows them where they are now.' })));
+}
+$('btn-off').addEventListener('click', () => {
+  const inside = [...S.agents.values()].filter(a => a.mode !== 'watch' && a.alive).map(a => a.name);
+  if (!confirm('Shut down the cockpit?\n\nAgents in terminal windows keep running.' +
+    (inside.length ? `\n\nRunning inside the cockpit: ${inside.join(', ')}. They are moved to terminal windows first, so they keep running too. A turn that is in progress is interrupted.` : ''))) return;
+  api('POST', '/api/shutdown', { handover: true }).catch(x => toast(x.message));
+});
 S.detail = store.get('cockpit.detail') === '1';
 setInterval(renderRail, 30000);
 // Tell the server which terminal agent is on screen, so it keeps that chat up to date.
