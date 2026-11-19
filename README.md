@@ -21,6 +21,14 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Permissions.** Per agent or for a whole project in Settings: ask before edits and commands, accept edits, plan
   first, or allow everything. Allow everything means the agent runs any command and changes or deletes any file
   without asking. It starts Claude Code with `--dangerously-skip-permissions`.
+- **Artifacts and files.** An artifact an agent publishes, or a file it sends you, shows as a card in the chat. A click
+  opens it next to the chat: pages, images, video, audio, PDF and text. Every image, page or document an agent read
+  or wrote has a Preview button in its step.
+- **Broadcast.** In Team, send one message or command, such as `/clock-in`, to every ticked agent. An agent in a
+  PowerShell window gets it typed into its window, if the cockpit opened that window and the agent is waiting for
+  input. Busy agents are left out and named, so nothing is typed into a window that is asking a question.
+- **Look.** The Aa button sets the theme (light, dark, midnight, paper, high contrast, or follow the PC) and the
+  text size. The choice is kept per browser.
 - **Approvals and questions.** Allow once, always allow, or deny. Answer questions with one click.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.
 - **Context.** A meter per agent, a breakdown of what fills it, and a Compact button.

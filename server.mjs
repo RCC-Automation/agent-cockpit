@@ -184,6 +184,71 @@ function toolSummary(name, input, cwd) {
   return s.replace(/\s+/g, ' ').slice(0, 200);
 }
 
+// Files an agent published, sent or worked with can be previewed in the page. Each gets a link under
+// /view/<agent>/<folder>/<name>, so a page that refers to files next to it still finds them.
+const VIEW_TYPES = {
+  '.html': ['html', 'text/html; charset=utf-8'], '.htm': ['html', 'text/html; charset=utf-8'], '.svg': ['image', 'image/svg+xml'],
+  '.png': ['image', 'image/png'], '.jpg': ['image', 'image/jpeg'], '.jpeg': ['image', 'image/jpeg'], '.gif': ['image', 'image/gif'], '.webp': ['image', 'image/webp'],
+  '.mp4': ['video', 'video/mp4'], '.webm': ['video', 'video/webm'], '.mov': ['video', 'video/quicktime'],
+  '.mp3': ['audio', 'audio/mpeg'], '.wav': ['audio', 'audio/wav'], '.ogg': ['audio', 'audio/ogg'], '.m4a': ['audio', 'audio/mp4'],
+  '.pdf': ['pdf', 'application/pdf'], '.md': ['text', 'text/plain; charset=utf-8'], '.txt': ['text', 'text/plain; charset=utf-8'],
+  '.json': ['text', 'text/plain; charset=utf-8'], '.csv': ['text', 'text/plain; charset=utf-8'], '.log': ['text', 'text/plain; charset=utf-8'],
+};
+// Files that travel with a page: served when a previewed page asks for them, never offered on their own.
+const ASSET_TYPES = { '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.ico': 'image/x-icon', '.avif': 'image/avif' };
+const b64url = t => Buffer.from(t, 'utf8').toString('base64url');
+const pathKey = p => process.platform === 'win32' ? p.toLowerCase() : p;
+
+function toolPaths(input) {
+  const i = input || {}, out = [];
+  for (const v of [i.file_path, i.path, i.notebook_path]) if (typeof v === 'string' && v.trim()) out.push(v.trim());
+  if (Array.isArray(i.files)) for (const v of i.files) if (typeof v === 'string' && v.trim()) out.push(v.trim());
+  return out;
+}
+function viewFiles(a, input) {
+  const out = [];
+  for (const raw of toolPaths(input)) {
+    const full = path.resolve(a.cwd, expandHome(raw)), type = VIEW_TYPES[path.extname(full).toLowerCase()];
+    if (type) out.push({ name: path.basename(full), kind: type[0], url: `/view/${a.id}/${b64url(path.dirname(full))}/${encodeURIComponent(path.basename(full))}` });
+  }
+  return out.length ? out : undefined;
+}
+// Only folders of files the agent itself named in a tool call are open for viewing.
+function viewableDirs(a) {
+  const dirs = new Set();
+  for (const it of rt(a.id).items) {
+    if (it.k !== 'tool' && it.k !== 'perm') continue;
+    for (const raw of toolPaths(it.input)) dirs.add(pathKey(path.dirname(path.resolve(a.cwd, expandHome(raw)))));
+  }
+  return dirs;
+}
+function serveView(a, req, res, token, rest) {
+  let dir = ''; try { dir = Buffer.from(token, 'base64url').toString('utf8'); } catch { /* bad link */ }
+  if (!dir || !viewableDirs(a).has(pathKey(dir))) return json(res, 404, { error: 'This file is not part of the agent\'s work shown in the cockpit.' });
+  let rel = ''; try { rel = decodeURIComponent(rest); } catch { /* bad link */ }
+  const full = path.resolve(dir, rel), ext = path.extname(full).toLowerCase();
+  const inside = pathKey(full).startsWith(pathKey(dir) + path.sep);
+  const type = VIEW_TYPES[ext] ? VIEW_TYPES[ext][1] : ASSET_TYPES[ext];
+  if (!rel || !inside || !type) return json(res, 404, { error: 'Not a file the cockpit can show.' });
+  let st; try { st = fs.statSync(full); } catch { /* gone */ }
+  if (!st || !st.isFile()) return json(res, 404, { error: 'The file no longer exists: ' + full });
+  const headers = { 'content-type': type, 'x-content-type-options': 'nosniff', 'cache-control': 'no-store', 'accept-ranges': 'bytes' };
+  // Pages and drawings made by an agent may contain scripts. They are shown as a separate, powerless
+  // origin, so a script in them cannot use the cockpit's own controls.
+  if (ext === '.html' || ext === '.htm' || ext === '.svg') headers['content-security-policy'] = 'sandbox allow-scripts allow-popups allow-forms allow-modals';
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (range && (range[1] || range[2])) {
+    let start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]));
+    let end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1;
+    if (start > end || start >= st.size) { res.writeHead(416, { 'content-range': `bytes */${st.size}` }); return res.end(); }
+    res.writeHead(206, { ...headers, 'content-range': `bytes ${start}-${end}/${st.size}`, 'content-length': end - start + 1 });
+    return fs.createReadStream(full, { start, end }).pipe(res);
+  }
+  res.writeHead(200, { ...headers, 'content-length': st.size });
+  fs.createReadStream(full).pipe(res);
+}
+
 // Text the CLI writes into user turns that the person did not type.
 // A message another agent sent to this one. It arrives as a user turn but the person did not type it.
 function parsePeer(t) {
@@ -208,7 +273,8 @@ function cleanUserText(t) {
 }
 
 // Build display items from a list of {type, message, parent_tool_use_id} records.
-function itemsFromHistory(messages, cwd, live = false) {
+function itemsFromHistory(messages, a, live = false) {
+  const cwd = a.cwd;
   const items = [];
   const tools = new Map();
   for (const m of messages) {
@@ -242,7 +308,7 @@ function itemsFromHistory(messages, cwd, live = false) {
       content.forEach((b, i) => {
         if (b.type === 'text' && b.text.trim()) items.push({ k: 'text', id: `${m.uuid}:${i}`, text: b.text });
         else if (b.type === 'tool_use') {
-          const it = { k: 'tool', id: b.id, name: b.name, summary: toolSummary(b.name, b.input, cwd), input: b.input, result: '', status: 'ok' };
+          const it = { k: 'tool', id: b.id, name: b.name, summary: toolSummary(b.name, b.input, cwd), input: b.input, files: viewFiles(a, b.input), result: '', status: 'ok' };
           tools.set(b.id, it); items.push(it);
         }
       });
@@ -264,7 +330,7 @@ async function ensureHistory(a) {
   if (!a.sessionId || r.items.length) return;
   try {
     const msgs = await getSessionMessages(a.sessionId, { dir: a.cwd });
-    r.items = itemsFromHistory(msgs, a.cwd).concat(r.items);
+    r.items = itemsFromHistory(msgs, a).concat(r.items);
   } catch (e) {
     r.items.unshift({ k: 'note', id: crypto.randomUUID(), text: 'Could not read earlier history: ' + e.message });
   }
@@ -373,7 +439,7 @@ async function loadWatched(a, force = false) {
   const at = w.mtime;
   w.loading = (async () => {
     try {
-      applyHistory(a, itemsFromHistory(await getSessionMessages(a.sessionId, { dir: a.cwd }), a.cwd, true), !r.historyLoaded);
+      applyHistory(a, itemsFromHistory(await getSessionMessages(a.sessionId, { dir: a.cwd }), a, true), !r.historyLoaded);
       w.loadedMtime = at; r.historyLoaded = true;
     } catch (e) { if (process.env.COCKPIT_DEBUG) console.error(`[${a.name}] history:`, e.message); }
     finally { w.loading = null; }
@@ -688,7 +754,7 @@ function handleMessage(a, m) {
       else if (b.type === 'tool_use') {
         if (b.name === 'AskUserQuestion') continue; // shown as a question card instead
         const sum = toolSummary(b.name, b.input, a.cwd);
-        addItem(a, { k: 'tool', id: b.id, name: b.name, summary: sum, input: b.input, result: '', status: 'run' });
+        addItem(a, { k: 'tool', id: b.id, name: b.name, summary: sum, input: b.input, files: viewFiles(a, b.input), result: '', status: 'run' });
         a.last = `${b.name} ${sum}`;
       }
     }
@@ -914,6 +980,79 @@ function removeAgent(a) {
   closeQuery(a);
   agents.delete(a.id); runtimes.delete(a.id);
   broadcast({ t: 'remove', agentId: a.id });
+}
+
+// ───────────────────────── broadcast ─────────────────────────
+// One message or command for several agents. An agent the cockpit runs gets it directly. An agent in a
+// terminal window gets it typed into that window, which works only for windows the cockpit opened
+// (Windows only) and only while the agent waits for input: typing into a window that is showing a
+// permission question could answer that question by accident.
+
+const TYPE_HELPER = `
+using System; using System.Runtime.InteropServices; using System.Threading;
+public static class CockpitKeys {
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool FreeConsole();
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool WriteConsoleInput(IntPtr h, INPUT_RECORD[] buf, uint len, out uint written);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [StructLayout(LayoutKind.Explicit, CharSet=CharSet.Unicode)] struct KEY_EVENT_RECORD {
+    [FieldOffset(0)] public int bKeyDown; [FieldOffset(4)] public ushort wRepeatCount; [FieldOffset(6)] public ushort wVirtualKeyCode;
+    [FieldOffset(8)] public ushort wVirtualScanCode; [FieldOffset(10)] public char UnicodeChar; [FieldOffset(12)] public uint dwControlKeyState; }
+  [StructLayout(LayoutKind.Explicit, CharSet=CharSet.Unicode)] struct INPUT_RECORD { [FieldOffset(0)] public ushort EventType; [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent; }
+  static bool Keys(IntPtr h, string text) {
+    var recs = new INPUT_RECORD[text.Length * 2];
+    for (int i = 0; i < text.Length; i++) for (int d = 0; d < 2; d++) {
+      var r = new INPUT_RECORD(); r.EventType = 1; r.KeyEvent.bKeyDown = d == 0 ? 1 : 0; r.KeyEvent.wRepeatCount = 1;
+      r.KeyEvent.wVirtualKeyCode = text[i] == '\\r' ? (ushort)13 : (ushort)0; r.KeyEvent.UnicodeChar = text[i]; recs[i * 2 + d] = r; }
+    uint n; return WriteConsoleInput(h, recs, (uint)recs.Length, out n);
+  }
+  // Types the text into the console of the given process, waits a moment, then presses Enter.
+  public static string Send(uint pid, string text) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return "could not reach its window (" + Marshal.GetLastWin32Error() + ")";
+    IntPtr h = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    if (h == new IntPtr(-1)) { FreeConsole(); return "could not open its input (" + Marshal.GetLastWin32Error() + ")"; }
+    bool ok = Keys(h, text); Thread.Sleep(600); ok = ok && Keys(h, "\\r");
+    CloseHandle(h); FreeConsole();
+    return ok ? "sent" : "typing failed (" + Marshal.GetLastWin32Error() + ")";
+  }
+}`;
+
+function typeIntoWindows(targets, text) {
+  // targets: [{ id, pid, started }]; resolves to a Map of id -> 'sent' or the reason it failed
+  const line = text.replace(/\s+/g, ' ').trim();
+  const script = `$ErrorActionPreference = 'Stop'\nAdd-Type -TypeDefinition @'\n${TYPE_HELPER}\n'@\n$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(line, 'utf8').toString('base64')}'))\n` +
+    targets.map(t => `$p = Get-Process -Id ${Number(t.pid)} -ErrorAction SilentlyContinue; $s = 0; if ($p) { try { $s = $p.StartTime.ToFileTimeUtc() } catch {} }\n` +
+      `if (-not $p) { Write-Output '${t.id}|its window is closed' } elseif ("$s" -ne '${String(t.started).replace(/\D/g, '')}') { Write-Output '${t.id}|its window is closed' } else { Write-Output ('${t.id}|' + [CockpitKeys]::Send(${Number(t.pid)}, $text)) }`).join('\n');
+  return new Promise(resolve => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(script)], { windowsHide: true, timeout: 60000 + targets.length * 3000 }, (err, stdout, stderr) => {
+      const out = new Map();
+      for (const l of String(stdout).split(/\r?\n/)) { const m = /^([0-9a-f-]{36})\|(.*)$/.exec(l.trim()); if (m) out.set(m[1], m[2]); }
+      const why = err ? String(stderr || err.message).split('\n').find(x => x.trim() && !x.startsWith('#<')) || 'the helper did not run' : '';
+      for (const t of targets) if (!out.has(t.id)) out.set(t.id, 'typing into the window failed' + (why ? ': ' + why.trim().slice(0, 160) : ''));
+      resolve(out);
+    });
+  });
+}
+
+async function broadcastTo(p, ids, text) {
+  const only = new Set(Array.isArray(ids) ? ids : []);
+  const sent = [], skipped = [], typing = [];
+  for (const a of [...agents.values()].filter(x => x.projectId === p.id && only.has(x.id))) {
+    const r = rt(a.id);
+    if ((a.mode || 'own') !== 'watch') { await ensureHistory(a); sendMessage(a, text); sent.push(a.name); continue; }
+    if (process.platform !== 'win32') { skipped.push({ name: a.name, why: 'typing into a terminal window works on Windows only' }); continue; }
+    if (!a.term || !a.term.pid || a.term.alive === false) { skipped.push({ name: a.name, why: 'it has no window opened by the cockpit' }); continue; }
+    if (r.status === 'work') { skipped.push({ name: a.name, why: 'it is busy' }); continue; }
+    if (r.status === 'need') { skipped.push({ name: a.name, why: 'it may be showing a question in its window' }); continue; }
+    typing.push(a);
+  }
+  if (typing.length) {
+    const res = await typeIntoWindows(typing.map(a => ({ id: a.id, pid: a.term.pid, started: a.term.started })), text);
+    for (const a of typing) { const out = res.get(a.id); if (out === 'sent') { sent.push(a.name); touch(a, 'Received: ' + text); } else skipped.push({ name: a.name, why: out }); }
+  }
+  return { sent, skipped };
 }
 
 // Stops the cockpit itself. Agents in terminal windows are not touched. Agents that run inside the
@@ -1158,6 +1297,15 @@ const server = http.createServer(async (req, res) => {
       saveRoster();
       return json(res, 200, { removed: gone.map(a => a.name) });
     }
+    const bc = /^\/api\/projects\/([0-9a-f-]{36})\/broadcast$/.exec(url.pathname);
+    if (bc && req.method === 'POST') {
+      const p = projects.get(bc[1]);
+      if (!p) return json(res, 404, { error: 'Project not found' });
+      const b = await readBody(req);
+      const text = String(b.text || '').trim();
+      if (!text) return json(res, 400, { error: 'Write the message or command to send.' });
+      return json(res, 200, await broadcastTo(p, b.ids, text.slice(0, 4000)));
+    }
     const wk = /^\/api\/projects\/([0-9a-f-]{36})\/wake$/.exec(url.pathname);
     if (wk && req.method === 'POST') {
       const p = projects.get(wk[1]);
@@ -1193,6 +1341,13 @@ const server = http.createServer(async (req, res) => {
         broadcast({ t: 'projectRemove', projectId: p.id });
         return json(res, 200, { ok: true });
       }
+    }
+    const vw = /^\/view\/([0-9a-f-]{36})\/([A-Za-z0-9_-]+)\/(.+)$/.exec(url.pathname);
+    if (vw && req.method === 'GET') {
+      const a = agents.get(vw[1]);
+      if (!a) return json(res, 404, { error: 'Agent not found' });
+      await ensureHistory(a);
+      return serveView(a, req, res, vw[2], vw[3]);
     }
     const m = /^\/api\/agents\/([0-9a-f-]{36})(?:\/([a-z]+))?$/.exec(url.pathname);
     if (m) {
