@@ -108,15 +108,48 @@ run it by typing `! npm test` in the Claude Code prompt. Things to expect:
    (`micButton()` in `public/index.html`, browser SpeechRecognition). The Mic button has **not** been tried
    in the owner's browser.
 
+## Changes of the evening of 19 Nov 2026
+
+Asked for by the owner while using the cockpit. Checked by syntax checks, by small scripts on real session
+files, and in a headless browser against a test cockpit on port 4700 (copies of real sessions under new ids
+and names ZTART*). Not clicked by the owner yet unless said.
+
+1. **Model menu** in the chat header (`renderHead()`): types `/model <name>` into the window and saves
+   `a.model`. Shown only when the cockpit can type into the window. Not tried in a browser.
+2. **No "Typed into …" popup** and no hint text in the message box.
+3. **Dictation language button** next to Mic: EN / ES / DE, one click each, stored in `cockpit.speech`.
+   Browser speech recognition cannot detect the language; the owner speaks all three.
+4. **No open window means Idle** (`pollWatched()`): "Ready to review" only for agents whose window is open.
+5. **Artifacts like in the Claude app.** `markArtifacts()` gives Artifact `publish`/`open` calls an
+   `artifact` field; the page draws a card (`artCard()`): icon, name, Opened/Published, arrow. Click shows
+   the local file next to the chat, or opens claude.ai. Artifact links in text show the name with an icon;
+   every URL in the chat is now a link (`md()`). Names come from the call, the page `<title>`, or
+   `data/artifact-names.json`, which `lookupName()` fills by searching the project's other sessions once.
+6. **Steps read like a sentence** (`stepPhrase()`): "Searched code, ran 4 commands, read `tool.py` ›" in grey
+   text, as in the Claude app. A Workflow gets its own card (`wfCard()`); not seen with a real workflow yet.
+7. **Visible thinking is shown.** The Claude app shows `thinking` blocks as text between the steps; the
+   cockpit skipped them, and the owner saw "swallowed" messages. `itemsFromHistory()` now adds them.
+8. **Less lag.** The page posts `view` at once on agent click and tab focus (`pingView()`), then every 5 s;
+   `POST view` and `GET items` read the session file at once (`pollWatched()`).
+9. **One typing helper that keeps running** (`typerStart()`, `typeOne()`). Before, every message started a
+   hidden PowerShell and compiled the C# helper: 7 to 45 s on this PC, and two sends at once could mix keys.
+   Now it starts with the cockpit, messages go through it one at a time, about 0.6 s each. Tested against a
+   hidden `cmd.exe` started by the test (not a Claude window). Note: `cmd.exe` drops keys typed while it is
+   still running the previous command, so back-to-back tests there need a gap; Claude Code queues them.
+10. **Wait 20 s after a window opens** before typing (`WINDOW_WARMUP_MS`), for the lost Enter. Not for
+    adopted windows.
+11. **Question check reads only the last 4 lines with text.** The owner got "its window is showing a
+    question" because the agent's own answer quoted "Enter to confirm". **Not yet tested on a real question
+    screen**: check once with `/model` that the hint is within the last 4 lines.
+
 ## Still open or unreliable
 
 - **Phone check (item 10).** Not done.
 - **npm test on Windows.** Not run, see above.
 - **The page in a browser.** Not clicked through after the changes. First thing to look at if the owner
   reports something odd in the page.
-- **Typing right after a window opens.** A message typed 9 s after Open terminal on a resumed session
-  arrived at the prompt, but its Enter was lost; the next message was then appended to it. At 20 s it
-  worked. Not fixed. A fix could wait until the screen shows the prompt before typing.
+- **Typing right after a window opens.** Now waits until the window is 20 s old (see above). A better fix
+  would wait until the screen shows the prompt.
 - **Question detection is by wording.** Only "Enter to confirm" and "Esc to cancel" are looked for. Tested
   with the `/model` menu. Not tested with the folder trust question, a permission question or the
   AskUserQuestion screen; those may use other words. Look at each once and extend `ShowsQuestion()`.
@@ -127,13 +160,17 @@ run it by typing `! npm test` in the Claude Code prompt. Things to expect:
 - **Adoption matches by name.** Two projects with an agent of the same name could adopt the wrong window.
 - **After a PC restart** every recorded window is marked closed (`loadRoster()` compares `openedAt` with the
   boot time). That is correct, but the owner then has to wake or reopen everything.
-- **Session files of the tests** are still in `~/.claude/projects` (two folders ending in
-  `scratchpad-proj` and `scratchpad-proj2`). They may show up as suggestions under New project until the
+- **Session files of the tests** are still in `~/.claude/projects` (folders ending in
+  `scratchpad-proj`, `scratchpad-proj2` and `ckpt-art-proj`; a hook on this PC stops agents from deleting
+  them, so only the owner can remove them). They may show up as suggestions under New project until the
   temp folders are cleaned by Windows. Harmless.
 - **"What the owner reported as broken"** in the old handoff ("waking, taking control and so on") was never
   detailed. Wake all passed in the test; Take over no longer exists.
 
 ## Next tasks, in order
+
+0. **Owner's check of the evening changes** after `restart.cmd` and Ctrl+F5: model menu, EN/ES/DE, artifact
+   cards, step sentences, sending speed, and the question check with `/model`.
 
 1. **Phone check.** With an agent in a cockpit-opened window, ask the owner to check that the Claude phone
    app still reaches it. Cockpit windows start plain `claude`; if the owner normally passes extra options,
@@ -180,7 +217,7 @@ read sessions (`listSessions`, `getSessionMessages`).
 | `public/index.html` (about 1,090 lines) | The whole page: styles, markup and plain JavaScript, no framework |
 | `test/cockpit.test.mjs`, `test/helpers.mjs` | Server tests on made-up session files. `npm test`. Not yet run on Windows |
 | `start.cmd`, `stop.cmd`, `restart.cmd`, `update.cmd` | Windows launchers. `start.cmd` runs the server hidden in the background |
-| `data/` (not in git) | `roster.json`, `cockpit.log`, `allow-all.settings.json` |
+| `data/` (not in git) | `roster.json`, `cockpit.log`, `allow-all.settings.json`, `artifact-names.json` |
 
 Sections of `server.mjs`, in file order:
 
@@ -193,7 +230,7 @@ Sections of `server.mjs`, in file order:
 | live view of sessions | `pollWatched()` follows a session file by size and time, `tailInfo()` reads what the session did last, `watchState()` derives Working / Ready to review / Needs you. `scanProjects()` adds named sessions and makes an agent follow the newest session with its name |
 | terminal windows | `openTerminal()`, `checkWindows()`, `closeWindow()`, `adoptWindows()`, `claudeArgs()`, `allowAllSettingsFile()`, `setPermissionMode()` |
 | HTTP helpers | `guard()` (loopback host check, origin check, optional token), `uniqueName()`, `importNamed()`, `wakeAll()`, `removeAgent()` |
-| broadcast and typing | `TYPE_HELPER` (C# compiled by PowerShell, with `ShowsQuestion()`), `typeIntoWindows()`, `typeBlock()`, `typeToAgents()`, `broadcastTo()` |
+| broadcast and typing | `TYPE_HELPER` (C# with `ShowsQuestion()`), `TYPER_SCRIPT` and `typerStart()` (the PowerShell helper that keeps running), `typeOne()`, `typeIntoWindows()`, `typeBlock()`, `typeToAgents()`, `broadcastTo()` |
 | routes | `routes` and `agentRoutes` |
 | start-up | `--stop`, `--ping`, `--wait` helper flags, `teeLog()`, `start()` with a retry for a port that is being released |
 
