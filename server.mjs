@@ -69,6 +69,7 @@ function loadRoster() {
       // A window opened before the PC last started cannot be open any more.
       if (a.term && (!a.term.openedAt || a.term.openedAt < bootedAt)) a.term.alive = false;
       agents.set(a.id, a);
+      if (a.interrupted && (a.mode || 'own') !== 'watch') { rt(a.id).status = 'need'; a.last = 'Interrupted when the cockpit stopped. Continue when you are ready.'; }
     }
   } catch { /* first run */ }
 }
@@ -131,7 +132,7 @@ function publicAgent(a) {
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, asleep: !wakeState(a), window: a.term && a.term.pid ? (a.term.alive === false ? 'closed' : 'open') : null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
-    login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
+    interrupted: !!a.interrupted, login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
 
@@ -856,6 +857,7 @@ function askUser(a, toolName, input, o) {
 
 function sendMessage(a, text, images = []) {
   const r = rt(a.id);
+  a.interrupted = false;
   const content = [];
   for (const im of images) content.push({ type: 'image', source: { type: 'base64', media_type: im.mediaType, data: im.data } });
   if (text) content.push({ type: 'text', text });
@@ -1055,26 +1057,18 @@ async function broadcastTo(p, ids, text) {
   return { sent, skipped };
 }
 
-// Stops the cockpit itself. Agents in terminal windows are not touched. Agents that run inside the
-// cockpit would stop with it, so they are moved to terminal windows first.
-async function handOverAll() {
-  const moved = [];
-  for (const a of [...agents.values()]) {
-    if (a.mode === 'watch' || !a.sessionId || !rt(a.id).q) continue;
-    try { await releaseAgent(a, 'Moved to a terminal window.'); await openTerminal(a); moved.push(a.name); }
-    catch (e) { console.error(`[shutdown] ${a.name}: ${e.message}`); }
-  }
-  return moved;
-}
+// Stops the cockpit itself. Nothing changes about where an agent lives: agents in terminal windows
+// keep running, and agents that run inside the cockpit stay cockpit agents. They pause, and one that
+// was in the middle of a turn is marked so the page can offer to continue it after the next start.
 
 const routes = {
   'GET /api/health': async (req, res) => json(res, 200, { ok: true, app: 'agent-cockpit' }),
   'POST /api/shutdown': async (req, res) => {
-    const b = await readBody(req);
-    const moved = b.handover === false ? [] : await handOverAll();
-    json(res, 200, { ok: true, moved });
+    await readBody(req);
+    const paused = [...agents.values()].filter(a => (a.mode || 'own') !== 'watch' && ['work', 'need'].includes(rt(a.id).status)).map(a => a.name);
+    json(res, 200, { ok: true, paused });
     broadcast({ t: 'shutdown' });
-    console.log('Shut down on request.' + (moved.length ? ' Moved to terminal windows: ' + moved.join(', ') : ''));
+    console.log('Shut down on request.' + (paused.length ? ' Interrupted in the middle of a turn: ' + paused.join(', ') : ''));
     setTimeout(shutdown, 500);
   },
   'GET /api/state': async (req, res) => {
@@ -1364,7 +1358,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 function shutdown() {
-  for (const a of agents.values()) { const r = rt(a.id); r.stopping = true; a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0; closeQuery(a); }
+  for (const a of agents.values()) {
+    const r = rt(a.id);
+    if ((a.mode || 'own') !== 'watch' && r.q && (r.status === 'work' || r.status === 'need')) a.interrupted = true;
+    r.stopping = true; a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0; closeQuery(a);
+  }
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ROSTER_FILE, rosterJson()); } catch { /* best effort */ }
   process.exit(0);
 }
@@ -1413,15 +1411,8 @@ function teeLog() {
 
 function start() {
   teeLog();
-  server.on('error', e => {
-    if (e.code === 'EADDRINUSE') {
-      console.log(`Cockpit is already running at ${shownUrl()}`);
-      if (process.argv.includes('--open')) openBrowser(shownUrl());
-      return setTimeout(() => process.exit(0), 400);
-    }
-    console.error(e); process.exit(1);
-  });
-  server.listen(PORT, HOST, () => {
+  let tries = 0;
+  const onListening = () => {
     loadRoster();
     setInterval(watchTick, WATCH_MS);
     setInterval(scanProjects, SCAN_MS);
@@ -1433,15 +1424,31 @@ function start() {
     console.log('  Agents in terminal windows keep running when the cockpit stops.');
     console.log('  Stop the cockpit with Shut down in the page, with stop.cmd, or with Ctrl+C here.\n');
     if (process.argv.includes('--open')) openBrowser(shownUrl());
+  };
+  server.on('error', async e => {
+    if (e.code !== 'EADDRINUSE') { console.error(e); process.exit(1); }
+    // The port is taken. Either a cockpit is running, or one is just shutting down (a restart).
+    // Give a cockpit that is going down a few seconds to release the port before deciding.
+    tries++;
+    await new Promise(done => setTimeout(done, 700));
+    if (tries >= 8 || (tries >= 4 && await isUp())) {
+      if (await isUp()) { console.log(`Cockpit is already running at ${shownUrl()}`); if (process.argv.includes('--open')) openBrowser(shownUrl()); return setTimeout(() => process.exit(0), 400); }
+      console.error(`Port ${PORT} is used by another program. Set COCKPIT_PORT to a free port.`); process.exit(1);
+    }
+    server.listen(PORT, HOST);
   });
+  server.on('listening', onListening);
+  server.listen(PORT, HOST);
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
 
 if (process.argv.includes('--stop')) {
-  const r = await localCall('POST', '/api/shutdown', { handover: true }, 120000);
-  if (r && r.status === 200) console.log('Cockpit stopped.' + (r.json && r.json.moved && r.json.moved.length ? ' Moved to terminal windows: ' + r.json.moved.join(', ') + '.' : ''));
+  const r = await localCall('POST', '/api/shutdown', {}, 30000);
+  if (r && r.status === 200) console.log('Cockpit stopped.' + (r.json && r.json.paused && r.json.paused.length ? ' Interrupted in the middle of a turn: ' + r.json.paused.join(', ') + '. They offer Continue after the next start.' : ''));
   else console.log('Cockpit was not running.');
+  // Return only when it is really gone, so a start right after this finds the port free.
+  for (let i = 0; i < 60 && await isUp(); i++) await new Promise(done => setTimeout(done, 250));
   process.exit(0);
 } else if (process.argv.includes('--ping')) {
   process.exit(await isUp() ? 0 : 1);

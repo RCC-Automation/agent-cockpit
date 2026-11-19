@@ -267,7 +267,7 @@ details.peer[open] summary .t{display:none}
 const ST = { need: 'Needs you', review: 'Ready to review', work: 'Working', failed: 'Failed', idle: 'Idle' };
 const ORDER = ['need', 'review', 'work', 'failed', 'idle'];
 const MODES = { default: 'Ask before edits and commands', acceptEdits: 'Accept edits, ask for commands', auto: 'Auto: Claude Code judges each action itself', plan: 'Plan first, change nothing', dontAsk: 'Never ask: refuse what is not allowed in advance', bypassPermissions: 'Allow everything, never ask' };
-const ALLOW_ALL_WARNING = 'With "Allow everything" an agent runs any command and changes or deletes any file without asking you first.';
+const ALLOW_ALL_WARNING = 'With "Allow everything" an agent runs any command and changes or deletes any file without asking you first.\n\nThe first terminal window that starts this way shows a warning from Claude Code with "No, exit" preselected. Choose "Yes, I accept" there once. Claude Code remembers it.';
 const KCOL = ['var(--ink-2)', 'var(--review)', 'var(--work)', 'var(--need)', 'var(--done)', 'var(--ink-3)', 'var(--fail)'];
 
 const S = { projects: [], agents: new Map(), items: new Map(), commands: new Map(), project: null, cur: null, view: 'chat',
@@ -436,6 +436,7 @@ function renderHead() {
     mode,
     watch && a.window === 'open' ? h('button', { class: 'btn sm danger', type: 'button', text: 'Stop', title: 'Close its terminal window and stop the agent', onclick: () => stopTerm(a) }) : null,
     a.ctx != null ? h('button', { class: 'chip' + lvl(a.ctx), type: 'button', 'aria-expanded': String(S.ctxOpen), title: 'Show what fills the context', onclick: toggleCtx }, `Context ${a.ctx}%`, meter(a.ctx)) : null,
+    !watch && a.interrupted ? h('button', { class: 'btn sm primary', type: 'button', text: 'Continue', title: 'It was interrupted when the cockpit stopped', onclick: () => send(a, 'Continue where you left off.', []) }) : null,
     !watch && a.status === 'review' ? h('button', { class: 'btn sm', type: 'button', text: 'Mark done', onclick: () => api('POST', `/api/agents/${a.id}/settings`, { status: 'idle' }).catch(x => toast(x.message)) }) : null,
     !watch && (a.status === 'work' || a.status === 'need') ? h('button', { class: 'btn sm danger', type: 'button', text: 'Stop', onclick: () => api('POST', `/api/agents/${a.id}/stop`).catch(x => toast(x.message)) }) : null,
     h('button', { class: 'btn sm', type: 'button', text: S.detail ? 'Group steps' : 'Show all steps', title: 'Fold commands, file reads and other tool calls into one line, or show each of them', onclick: () => { S.detail = !S.detail; store.set('cockpit.detail', S.detail ? '1' : ''); renderMain(); } }),
@@ -638,7 +639,7 @@ function openTerm(a) {
 function watchBar(a) {
   return h('div', { class: 'composer watchbar' },
     h('span', { text: a.window === 'closed'
-      ? `${a.name}'s terminal window is closed. Open terminal continues it in a new window.`
+      ? `${a.name}'s terminal window is closed. Take over brings it back as a chat here. Open terminal continues it in a new window.`
       : `${a.name} runs in a terminal. You see it live here, and you write to it there. It keeps running when the cockpit is closed.` }),
     h('button', { class: 'btn', type: 'button', text: 'Open terminal', title: 'Open a terminal window for this agent, for example after its window was closed', onclick: () => openTerm(a) }),
     h('button', { class: 'btn primary', type: 'button', text: 'Take over', onclick: () => takeover(a) }));
@@ -1034,9 +1035,12 @@ function stopped() {
 }
 $('btn-off').addEventListener('click', () => {
   const inside = [...S.agents.values()].filter(a => a.mode !== 'watch' && a.alive).map(a => a.name);
+  const busy = [...S.agents.values()].filter(a => a.mode !== 'watch' && (a.status === 'work' || a.status === 'need')).map(a => a.name);
   if (!confirm('Shut down the cockpit?\n\nAgents in terminal windows keep running.' +
-    (inside.length ? `\n\nRunning inside the cockpit: ${inside.join(', ')}. They are moved to terminal windows first, so they keep running too. A turn that is in progress is interrupted.` : ''))) return;
-  api('POST', '/api/shutdown', { handover: true }).catch(x => toast(x.message));
+    (inside.length ? `\n\nAgents inside the cockpit pause until you start it again: ${inside.join(', ')}. They stay cockpit agents and keep their chat.` : '') +
+    (busy.length ? `\n\nIn the middle of a turn right now, and interrupted by this: ${busy.join(', ')}. After the next start each one offers Continue.` : '') +
+    (inside.length ? '\n\nTo keep one running without the cockpit, cancel and use Open in terminal on it first.' : ''))) return;
+  api('POST', '/api/shutdown', {}).catch(x => toast(x.message));
 });
 S.detail = store.get('cockpit.detail') === '1';
 setInterval(renderRail, 30000);

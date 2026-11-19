@@ -20,7 +20,8 @@ A small control station for your Claude Code agents. It runs on your own PC and 
   at once, for example every agent that has been idle for three days. Removed agents are not added again automatically.
 - **Permissions.** Per agent or for a whole project in Settings: ask before edits and commands, accept edits, plan
   first, or allow everything. Allow everything means the agent runs any command and changes or deletes any file
-  without asking. It starts Claude Code with `--dangerously-skip-permissions`.
+  without asking. It starts Claude Code with `--dangerously-skip-permissions`. The first window that starts this way
+  shows Claude Code's own warning with "No, exit" preselected; choose "Yes, I accept" once and it is remembered.
 - **Artifacts and files.** An artifact an agent publishes, or a file it sends you, shows as a card in the chat. A click
   opens it next to the chat: pages, images, video, audio, PDF and text. Every image, page or document an agent read
   or wrote has a Preview button in its step.
@@ -44,8 +45,9 @@ http://localhost:4600/. It runs in the background without a window of its own.
 
 **Closing a window stops nothing.** You can close the browser and the start window. Agents in PowerShell windows are
 independent of the cockpit and keep running even when the cockpit is shut down. To stop the cockpit itself, click
-**Shut down** in the page or run **`stop.cmd`**. Agents that run inside the cockpit are moved to PowerShell windows
-first, so they keep running too.
+**Shut down** in the page or run **`stop.cmd`**. Agents that run inside the cockpit pause while it is stopped. They
+stay cockpit agents and keep their chat; one that was in the middle of a turn offers **Continue** after the next
+start. To keep such an agent running without the cockpit, use **Open in terminal** on it.
 
 | Script | What it does |
 |---|---|
