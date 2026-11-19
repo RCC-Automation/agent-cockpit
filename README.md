@@ -14,6 +14,11 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Chat.** Live streaming answers and images (attach, paste or drop). Commands, file reads and other tool calls are
   folded into one line between the messages; click it, or use Show all steps, to see them. Messages from other agents
   are shown apart from your own.
+- **Wake all.** One click opens a PowerShell window for every agent of the project that is not running, one window
+  per agent. Each continues its session and waits for you. Agents that are already running are left alone.
+- **Permissions.** Per agent or for a whole project in Settings: ask before edits and commands, accept edits, plan
+  first, or allow everything. Allow everything means the agent runs any command and changes or deletes any file
+  without asking. It starts Claude Code with `--dangerously-skip-permissions`.
 - **Approvals and questions.** Allow once, always allow, or deny. Answer questions with one click.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.
 - **Context.** A meter per agent, a breakdown of what fills it, and a Compact button.

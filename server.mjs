@@ -21,6 +21,8 @@ const IDLE_CLOSE_MS = Number(process.env.COCKPIT_IDLE_MINUTES || 20) * 60_000;
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_BODY = 30 * 1024 * 1024;
 const MAX_RESULT_CHARS = 6000;
+// 'bypassPermissions' is the allow-all mode: the agent runs every command and edit without asking.
+const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'];
 // Agents run on the Claude login of this PC (your subscription). An API key in the
 // environment would silently switch them to pay-per-use billing, so it is not passed on
 // unless you ask for it with COCKPIT_ALLOW_API_KEY=1.
@@ -103,7 +105,7 @@ function shortPath(p) {
 }
 
 function publicProject(p) {
-  return { id: p.id, name: p.name, cwd: p.cwd, cwdShort: shortPath(p.cwd), note: p.note || '', autoImport: p.autoImport !== false, createdAt: p.createdAt };
+  return { id: p.id, name: p.name, cwd: p.cwd, cwdShort: shortPath(p.cwd), note: p.note || '', autoImport: p.autoImport !== false, permissionMode: p.permissionMode || 'default', createdAt: p.createdAt };
 }
 function samePath(x, y) {
   const n = v => path.resolve(v).replace(/[\\/]+$/, '');
@@ -122,7 +124,7 @@ function publicAgent(a) {
   const r = rt(a.id);
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
-    sessionId: a.sessionId || null, window: a.term && a.term.pid ? (a.term.alive === false ? 'closed' : 'open') : null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
+    sessionId: a.sessionId || null, asleep: !wakeState(a), window: a.term && a.term.pid ? (a.term.alive === false ? 'closed' : 'open') : null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
     login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
@@ -447,8 +449,9 @@ function claudeArgs(a, firstMessage) {
   else {
     args.push('--name', a.title || a.name);
     if (a.model) args.push('--model', a.model);
-    if (a.permissionMode && a.permissionMode !== 'default') args.push('--permission-mode', a.permissionMode);
   }
+  if (a.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
+  else if (a.permissionMode && a.permissionMode !== 'default') args.push('--permission-mode', a.permissionMode);
   if (firstMessage) args.push(firstMessage.replace(/\s+/g, ' ').trim());
   return args;
 }
@@ -532,6 +535,17 @@ function closeWindow(a) {
   });
 }
 
+// Changes how much an agent may do without asking. Allow-all can only be switched on or off when the
+// agent's process starts, so a running cockpit agent is restarted between turns.
+async function setPermissionMode(a, mode) {
+  if (!PERMISSION_MODES.includes(mode) || mode === (a.permissionMode || 'default')) return;
+  const r = rt(a.id), crossesBypass = mode === 'bypassPermissions' || a.permissionMode === 'bypassPermissions';
+  a.permissionMode = mode;
+  if (r.q && crossesBypass) { if (r.status === 'work' || r.status === 'need') r.restartWhenIdle = true; else closeQuery(a); }
+  else if (r.q) { try { await r.q.setPermissionMode(mode); } catch { /* applies on the next start */ } }
+  saveRoster(); emitAgent(a);
+}
+
 // Stops running an agent inside the cockpit, so a terminal can own its session.
 async function releaseAgent(a, last) {
   const r = rt(a.id);
@@ -590,6 +604,7 @@ function startQuery(a) {
     includePartialMessages: true,
     systemPrompt: { type: 'preset', preset: 'claude_code', append: teamBrief(a) },
     permissionMode: a.permissionMode || 'default',
+    allowDangerouslySkipPermissions: a.permissionMode === 'bypassPermissions',
     canUseTool: (toolName, input, o) => askUser(a, toolName, input, o),
     stderr: d => { if (process.env.COCKPIT_DEBUG) process.stderr.write(`[${a.name}] ${d}`); },
   };
@@ -690,6 +705,7 @@ function handleMessage(a, m) {
   }
 
   if (m.type === 'result') {
+    if (r.restartWhenIdle) { r.restartWhenIdle = false; setTimeout(() => closeQuery(a), 200); } // a new permission mode starts with the next message
     r.queryCost = m.total_cost_usd || r.queryCost;
     r.live = []; r.liveCurrent = null;
     for (const it of r.items) if (it.k === 'tool' && it.status === 'run') { it.status = 'ok'; updateItem(a, it); }
@@ -851,12 +867,33 @@ async function importNamed(proj, list) {
     let cwd = proj.cwd;
     try { if (s.cwd && fs.statSync(s.cwd).isDirectory()) cwd = path.resolve(s.cwd); } catch { /* keep the project folder */ }
     const title = s.customTitle.trim();
-    const a = { id: crypto.randomUUID(), projectId: proj.id, mode: 'watch', title, name: uniqueName(title, proj.id), cwd, model: '', permissionMode: 'default',
+    const a = { id: crypto.randomUUID(), projectId: proj.id, mode: 'watch', title, name: uniqueName(title, proj.id), cwd, model: '', permissionMode: proj.permissionMode || 'default',
       sessionId: s.sessionId, createdAt: Date.now(), updatedAt: s.lastModified || Date.now(), cost: 0, last: '' };
     agents.set(a.id, a); added.push(a); emitAgent(a);
   }
   if (added.length) saveRoster();
   return added;
+}
+
+// Opens a terminal window, one per agent, for every agent of the project that is not running.
+// An agent that looks active is left alone, so no session ends up with two windows.
+function wakeState(a) {
+  if ((a.mode || 'own') !== 'watch') return 'inside the cockpit';
+  if (a.term && a.term.pid && a.term.alive !== false) return 'window is open';
+  const mtime = rt(a.id).watch.mtime;
+  if (mtime && Date.now() - mtime < 180_000) return 'active in the last three minutes';
+  return null;
+}
+async function wakeAll(p) {
+  const opened = [], skipped = [], failed = [];
+  for (const a of [...agents.values()].filter(x => x.projectId === p.id)) {
+    const why = wakeState(a);
+    if (why) { skipped.push({ name: a.name, why }); continue; }
+    try { await openTerminal(a); touch(a, a.sessionId ? 'Opened in a terminal window.' : 'Starting in a terminal window.'); opened.push(a.name); }
+    catch (e) { failed.push({ name: a.name, why: e.message }); }
+    await new Promise(done => setTimeout(done, 400));
+  }
+  return { opened, skipped, failed };
 }
 
 // Stops the cockpit itself. Agents in terminal windows are not touched. Agents that run inside the
@@ -955,7 +992,7 @@ const routes = {
     }
     const a = {
       id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(b.name, proj.id), cwd, model: String(b.model || '').trim(),
-      permissionMode: ['default', 'acceptEdits', 'plan'].includes(b.permissionMode) ? b.permissionMode : 'default',
+      permissionMode: PERMISSION_MODES.includes(b.permissionMode) ? b.permissionMode : (proj.permissionMode || 'default'),
       sessionId: b.sessionId || null, createdAt: Date.now(), updatedAt: Date.now(), cost: 0,
       mode: b.sessionId && b.mode === 'watch' ? 'watch' : 'own', title: String(b.title || '').trim(),
       last: b.sessionId ? 'Taken over. Send a message to continue.' : 'Ready. Waiting for a task.',
@@ -1034,10 +1071,7 @@ const agentRoutes = {
     const b = await readBody(req);
     const r = rt(a.id);
     if (typeof b.name === 'string' && b.name.trim() && b.name.trim() !== a.name) a.name = uniqueName(b.name, a.projectId);
-    if (['default', 'acceptEdits', 'plan'].includes(b.permissionMode) && b.permissionMode !== a.permissionMode) {
-      a.permissionMode = b.permissionMode;
-      if (r.q) { try { await r.q.setPermissionMode(a.permissionMode); } catch { /* applies on next start */ } }
-    }
+    if (typeof b.permissionMode === 'string') await setPermissionMode(a, b.permissionMode);
     if (typeof b.model === 'string' && b.model.trim() !== (a.model || '')) {
       a.model = b.model.trim();
       if (r.q) { try { await r.q.setModel(a.model || undefined); } catch { /* applies on next start */ } }
@@ -1103,6 +1137,12 @@ const server = http.createServer(async (req, res) => {
       if (!p) return json(res, 404, { error: 'Project not found' });
       return json(res, 200, { imported: (await importNamed(p)).length });
     }
+    const wk = /^\/api\/projects\/([0-9a-f-]{36})\/wake$/.exec(url.pathname);
+    if (wk && req.method === 'POST') {
+      const p = projects.get(wk[1]);
+      if (!p) return json(res, 404, { error: 'Project not found' });
+      return json(res, 200, await wakeAll(p));
+    }
     const pm = /^\/api\/projects\/([0-9a-f-]{36})$/.exec(url.pathname);
     if (pm) {
       const p = projects.get(pm[1]);
@@ -1112,6 +1152,10 @@ const server = http.createServer(async (req, res) => {
         if (typeof b.name === 'string' && b.name.trim()) p.name = b.name.trim().slice(0, 60);
         if (typeof b.note === 'string') p.note = b.note.slice(0, 4000);
         if (typeof b.autoImport === 'boolean') p.autoImport = b.autoImport;
+        if (PERMISSION_MODES.includes(b.permissionMode)) {
+          p.permissionMode = b.permissionMode; // the team's setting: every agent of the project gets it
+          for (const a of [...agents.values()].filter(x => x.projectId === p.id)) await setPermissionMode(a, b.permissionMode);
+        }
         saveRoster(); broadcast({ t: 'project', project: publicProject(p) });
         return json(res, 200, { project: publicProject(p) });
       }
