@@ -203,6 +203,11 @@ details.peer[open] summary .t{display:none}
 .attach img{width:56px;height:56px;object-fit:cover;border:1px solid var(--line);border-radius:6px;display:block}
 .attach button{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;border:1px solid var(--line);background:var(--surface);font-size:11px;line-height:1;cursor:pointer;padding:0}
 .hint{font-size:.7rem;color:var(--ink-3)}
+.mic{display:inline-flex;align-items:center;gap:6px}
+.mic svg{width:14px;height:14px;display:block}
+.mic.on{border-color:var(--fail);color:var(--fail);background:color-mix(in srgb,var(--fail) 10%,var(--surface))}
+.mic.on svg{animation:pulse 1.2s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.mic.on svg{animation:none}}
 .watchbar{flex-direction:row;align-items:center;gap:10px 14px;flex-wrap:wrap;background:var(--surface-2)}
 .watchbar span{flex:1 1 320px;color:var(--ink-2);font-size:.85rem}
 .cmds{position:absolute;left:12px;right:12px;bottom:100%;background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px rgb(0 0 0 / .18);max-height:240px;overflow:auto;padding:4px;z-index:5}
@@ -398,6 +403,7 @@ function loadItems(id) {
   return loading.get(id);
 }
 function renderMain() {
+  if (S.micStop) S.micStop();
   const main = $('main'); main.textContent = ''; els = {};
   if (S.view === 'project' || !S.projects.length) return main.append(viewProject());
   if (S.view === 'new') return main.append(viewNew());
@@ -669,6 +675,52 @@ function renderCtx() {
     cmds.includes('save-session') ? h('button', { class: 'btn sm', type: 'button', text: 'Save handoff', title: 'Runs /save-session', onclick: () => send(a, '/save-session', []) }) : null));
 }
 
+// ───────── dictation ─────────
+// Uses the speech recognition built into the browser (Chrome and Edge have it). Click to start, speak,
+// click again to stop. The words go into the message box as you speak; nothing is sent until you send it.
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+const SPEECH_LANGS = { '': 'Follow the browser', 'en-US': 'English (US)', 'en-GB': 'English (UK)', 'es-ES': 'Español (España)', 'es-MX': 'Español (México)', 'de-DE': 'Deutsch', 'fr-FR': 'Français', 'it-IT': 'Italiano', 'pt-BR': 'Português (Brasil)' };
+function micButton(ta) {
+  const label = h('span', { text: 'Mic' });
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
+  icon.innerHTML = '<path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6.5-3.5a1 1 0 1 0-2 0 4.5 4.5 0 0 1-9 0 1 1 0 1 0-2 0 6.5 6.5 0 0 0 5.5 6.42V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.08a6.5 6.5 0 0 0 5.5-6.42Z"/>';
+  const b = h('button', { class: 'btn mic', type: 'button', title: 'Dictate: click, speak, click again to stop', 'aria-pressed': 'false' }, icon, label);
+  let rec = null;
+  const stop = () => {
+    if (rec) { const r = rec; rec = null; r.onend = null; try { r.stop(); } catch { /* already stopped */ } }
+    b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic';
+    if (S.micStop === stop) S.micStop = null;
+  };
+  b.addEventListener('click', () => {
+    if (rec) return stop();
+    if (!Speech) return toast('This browser has no built-in dictation. It works in Chrome and Edge.');
+    if (S.micStop) S.micStop();
+    const r = new Speech(); rec = r;
+    r.lang = store.get('cockpit.speech') || navigator.language || 'en-US'; r.continuous = true; r.interimResults = true;
+    const before = ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value;
+    let said = '';
+    r.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) said += t; else interim += t; }
+      ta.value = before + said + interim; ta.dispatchEvent(new Event('input'));
+      ta.scrollTop = ta.scrollHeight;
+    };
+    r.onerror = e => {
+      const why = { 'not-allowed': 'The browser may not use the microphone. Allow it for this page: click the icon left of the address.', 'service-not-allowed': 'The browser may not use the microphone. Allow it for this page: click the icon left of the address.',
+        'audio-capture': 'No microphone was found.', network: 'Dictation needs an internet connection in this browser.', 'language-not-supported': 'This browser cannot dictate in the chosen language.' }[e.error];
+      if (why) toast(why);
+      if (e.error !== 'no-speech' && e.error !== 'aborted') stop();
+    };
+    // The browser stops listening after a pause. Keep going until the person clicks again.
+    r.onend = () => { if (rec === r) { try { r.start(); } catch { stop(); } } };
+    try { r.start(); } catch (x) { rec = null; return toast('Dictation could not start: ' + x.message); }
+    b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); label.textContent = 'Listening';
+    S.micStop = stop; ta.focus();
+  });
+  return { el: b, stop };
+}
+
 // ───────── composer ─────────
 async function send(a, text, images, force) {
   try {
@@ -715,7 +767,9 @@ function composer(a) {
     hit.forEach(c => menu.append(h('button', { type: 'button', text: '/' + c, onclick: () => { ta.value = '/' + c + ' '; menu.hidden = true; ta.focus(); } })));
     menu.hidden = !hit.length;
   };
+  const mic = micButton(ta);
   const submit = async () => {
+    mic.stop();
     const text = ta.value.trim(); if (!text && !S.attach.length) return;
     const imgs = S.attach; S.attach = []; paint(); ta.value = ''; S.drafts.delete(a.id); grow(); menu.hidden = true;
     if (!(await send(a, text, imgs))) { ta.value = text; S.attach = imgs; paint(); }
@@ -726,7 +780,7 @@ function composer(a) {
   const file = h('input', { type: 'file', accept: 'image/*', multiple: '', hidden: true, onchange: e => { add([...e.target.files]); e.target.value = ''; } });
   const wrap = h('div', { class: 'composer' }, menu, box,
     h('div', { class: 'line' },
-      h('button', { class: 'btn', type: 'button', text: '+ Image', title: 'Attach an image. Paste and drag also work.', onclick: () => file.click() }), file, ta,
+      h('button', { class: 'btn', type: 'button', text: '+ Image', title: 'Attach an image. Paste and drag also work.', onclick: () => file.click() }), file, mic.el, ta,
       h('button', { class: 'btn primary', type: 'button', text: 'Send', onclick: submit })));
   wrap.addEventListener('dragover', e => { e.preventDefault(); wrap.classList.add('drag'); });
   wrap.addEventListener('dragleave', () => wrap.classList.remove('drag'));
@@ -1010,6 +1064,8 @@ function lookMenu() {
   const menu = h('div', { class: 'look', role: 'dialog', 'aria-label': 'Theme and text size' },
     h('label', null, 'Theme', h('select', { id: 'look-theme', onchange: e => { store.set('cockpit.theme', e.target.value); applyLook(); } },
       Object.entries(THEMES).map(([k, v]) => h('option', { value: k, text: v, selected: (store.get('cockpit.theme') || 'system') === k })))),
+    h('label', null, 'Dictation language', h('select', { id: 'look-speech', onchange: e => store.set('cockpit.speech', e.target.value) },
+      Object.entries(SPEECH_LANGS).map(([k, v]) => h('option', { value: k, text: v, selected: (store.get('cockpit.speech') || '') === k })))),
     h('label', null, 'Text size', h('div', { class: 'size' },
       h('button', { class: 'btn sm', type: 'button', text: 'A−', 'aria-label': 'Smaller text', onclick: () => step(-1) }), shown,
       h('button', { class: 'btn sm', type: 'button', text: 'A+', 'aria-label': 'Larger text', onclick: () => step(1) }),
