@@ -9,6 +9,8 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Take over.** Close an agent in its terminal, click Take over, and it continues in the cockpit with its full history.
   Release hands it back to a terminal.
 - **Sessions.** Every earlier session of the folder can be watched or taken over.
+- **Terminal windows.** Start a new agent in a PowerShell window, or reopen any agent in one with Open in terminal.
+  The window runs the normal Claude Code, and the cockpit shows the same agent live.
 - **Chat.** Live streaming answers and images (attach, paste or drop). Commands, file reads and other tool calls are
   folded into one line between the messages; click it, or use Show all steps, to see them. Messages from other agents
   are shown apart from your own.
@@ -59,6 +61,8 @@ To use your installed Claude Code instead of the bundled one, set `COCKPIT_CLAUD
 - A watched agent is read from the session file Claude Code keeps on disk. Its status is derived from that file:
   Working while it writes, Ready to review when it ended its turn, Needs you when it asked a question or has been
   quiet for 90 seconds in the middle of a tool call, which often means an approval is waiting in the terminal.
+- One session takes input from one place. An agent in a terminal window is written to in that window; an agent run by
+  the cockpit is written to in the cockpit. Take over and Open in terminal move an agent between the two.
 - When you start a session again under the same name, or use `/clear`, the watched agent follows the newest session with that name.
 - Removing an agent or a project only removes it from the cockpit. Folders and session files are never deleted.
 
@@ -74,6 +78,9 @@ Set these before starting, as environment variables.
 | `COCKPIT_IDLE_MINUTES` | `20` | Close an idle agent process after this many minutes. `0` keeps them alive |
 | `COCKPIT_DATA` | `./data` | Where the roster is stored |
 | `COCKPIT_CLAUDE_PATH` | bundled | Path to a Claude Code executable to use instead of the bundled one |
+| `COCKPIT_CLAUDE_ARGS` | none | Extra arguments added to `claude` when the cockpit opens a terminal window |
+| `COCKPIT_TERMINAL` | window | Set to `wt` to open agents as tabs in Windows Terminal instead of separate windows |
+| `COCKPIT_SHELL` | `powershell.exe` | The shell the terminal window runs, for example `pwsh.exe` |
 | `COCKPIT_IMPORT_DAYS` | `7` | Named sessions used within this many days are shown automatically |
 | `COCKPIT_ALLOW_API_KEY` | off | Set to `1` to let agents use an API key from the environment |
 | `COCKPIT_DEBUG` | off | Print the agents' diagnostic output in the server window |

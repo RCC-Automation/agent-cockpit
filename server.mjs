@@ -374,6 +374,7 @@ async function loadWatched(a, force = false) {
 }
 
 async function pollWatched(a) {
+  if (!a.sessionId) return; // started in a terminal, its session file does not exist yet
   const r = rt(a.id), w = r.watch, file = sessionFile(a);
   if (!file) return;
   let st; try { st = fs.statSync(file); } catch { w.fileFor = null; return; }
@@ -430,6 +431,72 @@ async function scanProjects() {
       try { await importNamed(p, list); } catch { /* next scan */ }
     }
   } finally { scanBusy = false; }
+}
+
+// ───────────────────────── terminal windows ─────────────────────────
+// Opens a real terminal window that runs Claude Code for an agent. The terminal then owns the
+// session: the person types there, and the cockpit shows it live like any other watched agent.
+
+const psQuote = v => "'" + String(v).replace(/'/g, "''") + "'";
+const shQuote = v => "'" + String(v).replace(/'/g, `'\\''`) + "'";
+
+function claudeArgs(a, firstMessage) {
+  const args = [];
+  if (a.sessionId) args.push('--resume', a.sessionId);
+  else {
+    args.push('--name', a.title || a.name);
+    if (a.model) args.push('--model', a.model);
+    if (a.permissionMode && a.permissionMode !== 'default') args.push('--permission-mode', a.permissionMode);
+  }
+  if (firstMessage) args.push(firstMessage.replace(/\s+/g, ' ').trim());
+  return args;
+}
+
+function terminalCommand(a, firstMessage) {
+  const args = claudeArgs(a, firstMessage);
+  const extra = (process.env.COCKPIT_CLAUDE_ARGS || '').trim();
+  const title = (a.title || a.name).replace(/[^\w .-]/g, '').slice(0, 40) || 'agent';
+  if (process.platform === 'win32') {
+    // The script travels base64-encoded, so no quoting can break on its way through cmd.exe.
+    const script = `$Host.UI.RawUI.WindowTitle = ${psQuote(title)}; Set-Location -LiteralPath ${psQuote(a.cwd)}; claude ${args.map(psQuote).join(' ')}${extra ? ' ' + extra : ''}`;
+    const enc = Buffer.from(script, 'utf16le').toString('base64');
+    const shell = process.env.COCKPIT_SHELL || 'powershell.exe';
+    return (process.env.COCKPIT_TERMINAL || '').toLowerCase() === 'wt'
+      ? `wt.exe -w 0 new-tab --title "${title}" ${shell} -NoExit -EncodedCommand ${enc}`
+      : `start "${title}" ${shell} -NoExit -EncodedCommand ${enc}`;
+  }
+  const line = `cd ${shQuote(a.cwd)} && claude ${args.map(shQuote).join(' ')}${extra ? ' ' + extra : ''}`;
+  if (process.platform === 'darwin') {
+    return `osascript -e ${shQuote(`tell application "Terminal" to do script ${JSON.stringify(line)}`)} -e ${shQuote('tell application "Terminal" to activate')}`;
+  }
+  return `${process.env.COCKPIT_TERMINAL || 'x-terminal-emulator'} -e bash -lc ${shQuote(line + '; exec bash')}`;
+}
+
+function openTerminal(a, firstMessage) {
+  const env = agentEnv(); delete env.CLAUDE_AGENT_SDK_CLIENT_APP;
+  const command = terminalCommand(a, firstMessage);
+  return new Promise((resolve, reject) => {
+    exec(command, { cwd: a.cwd, env, windowsHide: true }, err => {
+      if (err) reject(new Error('Could not open a terminal window: ' + String(err.message).split('\n').slice(0, 2).join(' ')));
+      else resolve();
+    });
+    setTimeout(resolve, 900); // a window that stays open keeps the command running; only a quick failure is an error
+  });
+}
+
+// Stops running an agent inside the cockpit, so a terminal can own its session.
+async function releaseAgent(a, last) {
+  const r = rt(a.id);
+  if (a.mode === 'watch') return;
+  const wasRunning = !!r.q;
+  r.stopping = true;
+  for (const p of [...r.pending.values()]) p.cancel();
+  closeQuery(a);
+  a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0;
+  a.mode = 'watch'; if (!a.title) a.title = a.name;
+  r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 };
+  r.status = 'idle'; touch(a, last);
+  if (wasRunning) await new Promise(res => setTimeout(res, 800)); // let the process let go of the session
 }
 
 // ───────────────────────── engine: one SDK session per agent ─────────────────────────
@@ -828,6 +895,17 @@ const routes = {
     agents.set(a.id, a); saveRoster();
     const r = rt(a.id);
     if (a.mode === 'watch') { a.last = ''; emitAgent(a); return json(res, 200, { agent: publicAgent(a) }); }
+    if (b.where === 'terminal' && !b.sessionId) {
+      // The terminal creates the session. The roster shows a placeholder that attaches to it by name.
+      const first = String(b.firstMessage || '').trim();
+      a.mode = 'watch'; a.title = a.name; a.last = 'Starting in a terminal window.';
+      emitAgent(a);
+      try { await openTerminal(a, first.length <= 1500 ? first : ''); }
+      catch (e) { agents.delete(a.id); runtimes.delete(a.id); saveRoster(); broadcast({ t: 'remove', agentId: a.id }); return json(res, 500, { error: e.message }); }
+      saveRoster();
+      for (const ms of [4000, 9000]) setTimeout(scanProjects, ms);
+      return json(res, 200, { agent: publicAgent(a), hint: first.length > 1500 ? 'The first message was too long to pass along. Paste it in the terminal.' : '' });
+    }
     if (b.sessionId) await ensureHistory(a); else r.historyLoaded = true;
     note(a, b.sessionId ? `Taken over from session ${b.sessionId.slice(0, 8)} in ${shortPath(cwd)}` : `Launched in ${shortPath(cwd)}`);
     emitAgent(a);
@@ -908,17 +986,15 @@ const agentRoutes = {
   },
   // Hands the agent back to a terminal. The cockpit stops its process and only watches again.
   'POST release': async (a, req, res) => {
-    const r = rt(a.id);
-    if (a.mode !== 'watch' && a.sessionId) {
-      r.stopping = true;
-      for (const p of [...r.pending.values()]) p.cancel();
-      closeQuery(a);
-      a.cost = (a.cost || 0) + r.queryCost; r.queryCost = 0;
-      a.mode = 'watch'; if (!a.title) a.title = a.name;
-      r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 };
-      r.status = 'idle'; touch(a, 'Released to the terminal.');
-    }
+    if (a.sessionId) await releaseAgent(a, 'Released to the terminal.');
     json(res, 200, { agent: publicAgent(a), command: `claude --resume ${a.sessionId}` });
+  },
+  // Opens a terminal window running this agent. The terminal owns the session from then on.
+  'POST terminal': async (a, req, res) => {
+    await releaseAgent(a, 'Opening in a terminal window.');
+    try { await openTerminal(a); } catch (e) { return json(res, 500, { error: e.message }); }
+    touch(a, a.sessionId ? 'Opened in a terminal window.' : 'Starting in a terminal window.');
+    json(res, 200, { agent: publicAgent(a) });
   },
   // Removes the agent from the cockpit. The session file stays on disk and can be resumed again.
   'DELETE ': async (a, req, res) => {
