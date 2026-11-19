@@ -39,6 +39,13 @@ independent of the cockpit and keep running even when the cockpit is shut down. 
 **Shut down** in the page or run **`stop.cmd`**. Agents that run inside the cockpit are moved to PowerShell windows
 first, so they keep running too.
 
+| Script | What it does |
+|---|---|
+| `start.cmd` | Starts the cockpit in the background and opens the page. Safe to run when it is already running |
+| `stop.cmd` | Stops the cockpit. Agents in PowerShell windows keep running |
+| `restart.cmd` | Stops and starts it again |
+| `update.cmd` | Stops it, gets the newest version with `git pull`, and starts it again |
+
 From a terminal instead:
 
 ```bash
