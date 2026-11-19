@@ -101,6 +101,9 @@ To use your installed Claude Code instead of the bundled one, set `COCKPIT_CLAUD
 - The cockpit talks to an agent in a terminal window by typing into that window. To avoid answering a question by
   accident, it does not type while the agent shows a question, or, unless the agent runs in allow-all mode, while it is
   busy or may be asking for a permission. It tells you why and lets you type anyway.
+- A window you opened by hand is found by its command line, for example `claude --resume REBE` or
+  `claude --name REBE`, within about 20 seconds. The cockpit then shows it as open and can type into it. It never
+  closes such a window. Windows only.
 - Before typing, the cockpit reads the agent's window. If it shows a question or a menu (Enter to confirm, Esc to
   cancel), it does not type and tells you so.
 - Emoji cannot be typed into a Windows console: they arrive as broken characters. The cockpit leaves them out of
