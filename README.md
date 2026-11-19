@@ -9,7 +9,9 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Take over.** Close an agent in its terminal, click Take over, and it continues in the cockpit with its full history.
   Release hands it back to a terminal.
 - **Sessions.** Every earlier session of the folder can be watched or taken over.
-- **Chat.** Live streaming answers, images (attach, paste or drop), tool activity you can expand.
+- **Chat.** Live streaming answers and images (attach, paste or drop). Commands, file reads and other tool calls are
+  folded into one line between the messages; click it, or use Show all steps, to see them. Messages from other agents
+  are shown apart from your own.
 - **Approvals and questions.** Allow once, always allow, or deny. Answer questions with one click.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.
 - **Context.** A meter per agent, a breakdown of what fills it, and a Compact button.

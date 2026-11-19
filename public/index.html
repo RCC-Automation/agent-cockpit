@@ -110,6 +110,23 @@ details.tool .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-wi
 details.tool .r{flex:none;color:var(--ink-3)}
 details.tool .r.err{color:var(--fail)} details.tool .r.run{color:var(--work)}
 details.tool pre{margin:6px 0;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;color:var(--ink)}
+details.steps{align-self:flex-start;max-width:100%;min-width:0;font-size:.78rem;color:var(--ink-2);border:1px solid var(--line);border-radius:8px;background:var(--surface-2);padding:4px 10px}
+details.steps > summary{cursor:pointer;list-style:none;display:flex;gap:8px;align-items:baseline;min-width:0}
+details.steps > summary::-webkit-details-marker{display:none}
+details.steps > summary::before{content:"\25B8";color:var(--ink-3);flex:none}
+details.steps[open] > summary::before{content:"\25BE"}
+details.steps > summary b{color:var(--ink);font-weight:600;flex:none}
+details.steps > summary .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-family:var(--mono);font-size:.72rem}
+details.steps > summary .r{flex:none;font-weight:600}
+details.steps .r.err{color:var(--fail)} details.steps .r.run{color:var(--work)}
+.steps-body{display:flex;flex-direction:column;gap:6px;padding:8px 0 4px}
+details.peer{align-self:flex-end;max-width:min(760px,94%);min-width:0;border:1px dashed var(--ink-3);border-radius:10px;padding:6px 11px;font-size:.82rem;color:var(--ink-2)}
+details.peer summary{cursor:pointer;display:flex;gap:8px;align-items:baseline;list-style:none;min-width:0}
+details.peer summary::-webkit-details-marker{display:none}
+details.peer summary b{color:var(--ink);font-weight:600;flex:none}
+details.peer summary .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+details.peer[open] summary .t{display:none}
+.peer-body{white-space:pre-wrap;word-break:break-word;padding-top:8px;color:var(--ink)}
 .card{align-self:flex-start;max-width:min(680px,100%);border:1px solid color-mix(in srgb,var(--need) 55%,var(--line));background:color-mix(in srgb,var(--need) 8%,var(--surface));border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
 .card .k{font-family:var(--mono);font-size:.66rem;letter-spacing:.09em;text-transform:uppercase;color:var(--need);font-weight:600}
 .card pre{margin:0;font-family:var(--mono);font-size:.8rem;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:7px 10px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
@@ -189,7 +206,8 @@ const MODES = { default: 'Ask before edits and commands', acceptEdits: 'Accept e
 const KCOL = ['var(--ink-2)', 'var(--review)', 'var(--work)', 'var(--need)', 'var(--done)', 'var(--ink-3)', 'var(--fail)'];
 
 const S = { projects: [], agents: new Map(), items: new Map(), commands: new Map(), project: null, cur: null, view: 'chat',
-  drafts: new Map(), attach: [], ctxOpen: false, ctx: new Map(), home: '' };
+  drafts: new Map(), attach: [], ctxOpen: false, ctx: new Map(), home: '', detail: false };
+const plain = t => String(t || '').replace(/[*`#]+/g, '').replace(/\s+/g, ' ').trim();
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 
 function h(tag, a, ...kids) {
@@ -294,7 +312,7 @@ function renderRail() {
     for (const a of list) {
       rail.append(h('button', { class: 'row s-' + a.status, type: 'button', 'aria-current': a.id === S.cur && S.view === 'chat' ? 'true' : null, onclick: () => openAgent(a.id) },
         h('span', { class: 'dot' }), h('span', { class: 'cs', text: a.name }), h('span', { class: 'ago', text: (a.mode === 'watch' ? 'terminal · ' : '') + ago(a.updatedAt) }),
-        h('span', { class: 'last', text: a.last || '' }), a.ctx != null ? meter(a.ctx) : null));
+        h('span', { class: 'last', text: plain(a.last) }), a.ctx != null ? meter(a.ctx) : null));
     }
   }
 }
@@ -328,7 +346,7 @@ function renderMain() {
   main.append(els.head, els.ctxpanel, els.thread, els.typing, a.mode === 'watch' ? watchBar(a) : composer(a));
   renderHead();
   const thread = els.thread;
-  loadItems(a.id).then(() => { if (els.thread !== thread || !S.items.has(a.id)) return; thread.textContent = ''; for (const it of S.items.get(a.id)) thread.append(renderItem(it, a)); scrollDown(true); })
+  loadItems(a.id).then(() => { if (els.thread !== thread || !S.items.has(a.id)) return; thread.textContent = ''; for (const it of S.items.get(a.id)) if (!quietItem(it)) place(thread, renderItem(it, a), it); scrollDown(true); })
     .catch(e => els.thread.append(h('div', { class: 'note', text: 'Could not load the chat: ' + e.message })));
 }
 function renderHead() {
@@ -347,6 +365,7 @@ function renderHead() {
     a.ctx != null ? h('button', { class: 'chip' + lvl(a.ctx), type: 'button', 'aria-expanded': String(S.ctxOpen), title: 'Show what fills the context', onclick: toggleCtx }, `Context ${a.ctx}%`, meter(a.ctx)) : null,
     !watch && a.status === 'review' ? h('button', { class: 'btn sm', type: 'button', text: 'Mark done', onclick: () => api('POST', `/api/agents/${a.id}/settings`, { status: 'idle' }).catch(x => toast(x.message)) }) : null,
     !watch && (a.status === 'work' || a.status === 'need') ? h('button', { class: 'btn sm danger', type: 'button', text: 'Stop', onclick: () => api('POST', `/api/agents/${a.id}/stop`).catch(x => toast(x.message)) }) : null,
+    h('button', { class: 'btn sm', type: 'button', text: S.detail ? 'Group steps' : 'Show all steps', title: 'Fold commands, file reads and other tool calls into one line, or show each of them', onclick: () => { S.detail = !S.detail; store.set('cockpit.detail', S.detail ? '1' : ''); renderMain(); } }),
     watch ? h('button', { class: 'btn sm primary', type: 'button', text: 'Take over', onclick: () => takeover(a) }) : null,
     !watch && a.sessionId ? h('button', { class: 'btn sm', type: 'button', text: 'Release', title: 'Hand this agent back to a terminal. The cockpit stops its process and only watches.', onclick: () => release(a) }) : null,
     h('button', { class: 'btn sm', type: 'button', text: 'Remove', title: 'Remove from the cockpit. The session stays on disk and can be resumed.', onclick: () => { if (confirm(`Remove ${a.name} from the cockpit?\nIts session stays on disk and can be resumed later.`)) api('DELETE', `/api/agents/${a.id}`).catch(x => toast(x.message)); } }),
@@ -366,10 +385,14 @@ function renderItem(it, a) {
     e = h('div', { class: 'msg ai md', html: md(it.text || '') });
   } else if (it.k === 'tool') {
     const label = it.status === 'run' ? 'running' : it.status === 'err' ? 'failed' : '';
-    e = h('details', { class: 'tool' },
-      h('summary', null, h('b', { text: it.name }), h('span', { class: 't', text: it.summary || '' }), label ? h('span', { class: 'r ' + it.status, text: label }) : null),
+    e = h('details', { class: 'tool', 'data-label': stepLabel(it.name), 'data-status': it.status, 'data-sum': (it.summary || '').slice(0, 90) },
+      h('summary', null, h('b', { text: stepLabel(it.name) }), h('span', { class: 't', text: it.summary || '' }), label ? h('span', { class: 'r ' + it.status, text: label }) : null),
       h('pre', { text: typeof it.input === 'string' ? it.input : JSON.stringify(it.input, null, 2) }),
       it.result ? h('pre', { text: it.result }) : null);
+  } else if (it.k === 'peer') {
+    e = h('details', { class: 'peer' },
+      h('summary', null, h('b', { text: it.from ? `Message from ${it.from}` : 'Message from another agent' }), h('span', { class: 't', text: plain(it.text).slice(0, 200) })),
+      h('div', { class: 'peer-body', text: it.text }));
   } else if (it.k === 'perm') {
     if (it.state !== 'pending') {
       const word = { allowed: 'Allowed', always: 'Always allowed', denied: 'Denied', cancelled: 'Cancelled' }[it.state] || it.state;
@@ -424,6 +447,27 @@ function askCard(it, a) {
   card.append(h('div', { class: 'acts' }, h('button', { class: 'btn primary', type: 'button', text: 'Send answer', onclick: submit })));
   return card;
 }
+// Execution steps (tool calls) are folded into one line between the messages, so the conversation reads on its own.
+function stepLabel(name) { const m = /^mcp__(.+?)__(.+)$/.exec(name || ''); return m ? `${m[2]} (${m[1]})` : (name || 'Tool'); }
+function refreshGroup(g) {
+  const rows = [...g.lastChild.children];
+  if (!rows.length) return g.remove();
+  const counts = new Map(); let running = null, failed = 0;
+  for (const r of rows) { counts.set(r.dataset.label, (counts.get(r.dataset.label) || 0) + 1); if (r.dataset.status === 'run') running = r; if (r.dataset.status === 'err') failed++; }
+  const parts = [...counts].map(([n, c]) => c > 1 ? `${n} ×${c}` : n);
+  g.firstChild.replaceChildren(
+    h('b', { text: `${rows.length} step${rows.length === 1 ? '' : 's'}` }),
+    h('span', { class: 't', text: running ? `running: ${running.dataset.label} ${running.dataset.sum}` : parts.slice(0, 6).join(' · ') + (parts.length > 6 ? ' · …' : '') }),
+    ...[failed ? h('span', { class: 'r err', text: `${failed} failed` }) : null, running ? h('span', { class: 'r run', text: 'working' }) : null].filter(Boolean));
+}
+function place(thread, node, it) {
+  if (S.detail || it.k !== 'tool') { thread.append(node); return; }
+  let g = thread.lastElementChild;
+  if (!g || !g.classList.contains('steps')) { g = h('details', { class: 'steps' }, h('summary'), h('div', { class: 'steps-body' })); thread.append(g); }
+  g.lastChild.append(node); refreshGroup(g);
+}
+// A permission that was granted needs no line of its own: the step it belongs to shows that it ran.
+function quietItem(it) { return !S.detail && it.k === 'perm' && (it.state === 'allowed' || it.state === 'always' || it.state === 'cancelled'); }
 function upsertItem(agentId, it) {
   const list = S.items.get(agentId); if (!list) return;
   const i = list.findIndex(x => x.id === it.id);
@@ -431,8 +475,12 @@ function upsertItem(agentId, it) {
   if (agentId !== S.cur || S.view !== 'chat' || !els.thread) return;
   const a = curAgent(); const stick = nearBottom();
   const old = els.thread.querySelector(`[data-id="${CSS.escape(it.id)}"]`);
+  if (quietItem(it)) { if (old) old.remove(); return; }
   const fresh = renderItem(it, a);
-  if (old) { if (old.tagName === 'DETAILS' && old.open) fresh.open = true; old.replaceWith(fresh); } else els.thread.append(fresh);
+  if (old) {
+    if (old.tagName === 'DETAILS' && old.open) fresh.open = true;
+    const g = old.closest('.steps'); old.replaceWith(fresh); if (g) refreshGroup(g);
+  } else place(els.thread, fresh, it);
   if (stick) scrollDown(true);
 }
 const pendingPaint = new Set();
@@ -696,6 +744,7 @@ $('btn-project').addEventListener('click', () => go('project'));
 $('btn-new').addEventListener('click', () => go('new'));
 $('btn-resume').addEventListener('click', () => go('resume'));
 $('btn-notify').addEventListener('click', () => Notification.requestPermission().then(renderBar));
+S.detail = store.get('cockpit.detail') === '1';
 setInterval(renderRail, 30000);
 // Tell the server which terminal agent is on screen, so it keeps that chat up to date.
 setInterval(() => { const a = curAgent(); if (a && a.mode === 'watch' && S.view === 'chat' && !document.hidden) fetch(`/api/agents/${a.id}/view`, { method: 'POST' }).catch(() => {}); }, 8000);

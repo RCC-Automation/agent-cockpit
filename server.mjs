@@ -123,7 +123,7 @@ function publicAgent(a) {
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
-    login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
+    login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
 
@@ -168,14 +168,26 @@ function clip(s, n = MAX_RESULT_CHARS) { return s.length > n ? s.slice(0, n) + `
 
 function toolSummary(name, input, cwd) {
   const i = input || {};
-  const pick = i.file_path || i.path || i.command || i.pattern || i.url || i.query || i.description || i.prompt || i.skill || i.notebook_path || '';
+  let pick = i.file_path || i.path || i.command || i.pattern || i.url || i.query || i.description || i.prompt || i.skill || i.notebook_path || '';
+  if (!pick && i.to && i.message) pick = `to ${i.to}: ${i.message}`;
+  if (!pick) pick = Object.values(i).find(v => typeof v === 'string' && v.trim()) || '';
   let s = String(pick);
   if (cwd && s.length > cwd.length + 1 && s.startsWith(cwd) && /[\\/]/.test(s[cwd.length])) s = s.slice(cwd.length + 1);
   return s.replace(/\s+/g, ' ').slice(0, 200);
 }
 
 // Text the CLI writes into user turns that the person did not type.
+// A message another agent sent to this one. It arrives as a user turn but the person did not type it.
+function parsePeer(t) {
+  if (!t) return null;
+  const m = /<(cross-session-message|agent-message|teammate-message|peer-message)\b([^>]*)>([\s\S]*?)<\/\1>/.exec(t);
+  if (m) { const from = /\bfrom="([^"]*)"/.exec(m[2]); return { from: from ? from[1] : '', text: m[3].trim() }; }
+  if (/permission laundering|Another Claude session sent a message/i.test(t)) return { from: '', text: t.replace(/<\/?system-reminder\b[^>]*>/g, '').trim() };
+  return null;
+}
 function cleanUserText(t) {
+  if (!t) return '';
+  t = t.replace(/<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder>/g, '').trim();
   if (!t) return '';
   const cmd = t.match(/<command-name>([^<]+)<\/command-name>/);
   if (cmd) {
@@ -197,6 +209,8 @@ function itemsFromHistory(messages, cwd, live = false) {
     const content = msg.content;
     if (m.type === 'user') {
       if (typeof content === 'string') {
+        const peer = parsePeer(content);
+        if (peer) { items.push({ k: 'peer', id: m.uuid, ...peer }); continue; }
         const text = cleanUserText(content);
         if (text) items.push({ k: 'user', id: m.uuid, text, images: [] });
         continue;
@@ -204,7 +218,11 @@ function itemsFromHistory(messages, cwd, live = false) {
       if (!Array.isArray(content)) continue;
       let text = ''; const images = [];
       for (const b of content) {
-        if (b.type === 'text') text += (text ? '\n' : '') + cleanUserText(b.text);
+        if (b.type === 'text') {
+          const peer = parsePeer(b.text);
+          if (peer) items.push({ k: 'peer', id: `${m.uuid}:p${items.length}`, ...peer });
+          else text += (text ? '\n' : '') + cleanUserText(b.text);
+        }
         else if (b.type === 'image' && b.source?.type === 'base64') images.push({ mediaType: b.source.media_type, data: b.source.data });
         else if (b.type === 'tool_result') {
           const it = tools.get(b.tool_use_id);
@@ -300,6 +318,8 @@ function tailInfo(lines, cwd) {
     } else if (typeof c === 'string' || Array.isArray(c)) {
       if (Array.isArray(c) && c.some(b => b.type === 'tool_result')) { info = { kind: 'result', text: '' }; continue; }
       const raw = typeof c === 'string' ? c : c.filter(b => b.type === 'text').map(b => b.text).join(' ');
+      const peer = parsePeer(raw);
+      if (peer) { info = { kind: 'user', text: 'a message from ' + (peer.from || 'another agent') }; continue; }
       const text = cleanUserText(raw);
       if (/^\[Request interrupted/.test(text)) info = { kind: 'stopped', text: 'Interrupted in the terminal' };
       else if (text) info = { kind: 'user', text };
