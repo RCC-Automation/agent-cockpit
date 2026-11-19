@@ -4,6 +4,7 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 
 - **Projects.** A project is a folder plus the team of agents that works in it.
 - **New agent.** Name it, pick a model and permission mode, launch. No terminal needed.
+- **Automatic import.** When you create a project, every named session in its folder becomes an agent in the roster.
 - **Resume.** Bring back any previous Claude Code session recorded in the project folder.
 - **Chat.** Live streaming answers, images (attach, paste or drop), tool activity you can expand.
 - **Approvals and questions.** Allow once, always allow, or deny. Answer questions with one click.

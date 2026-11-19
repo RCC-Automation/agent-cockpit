@@ -524,6 +524,31 @@ function uniqueName(want) {
   for (let i = 2; ; i++) if (!taken.has(`${base}_${i}`.toLowerCase())) return `${base}_${i}`;
 }
 
+// Adds every named Claude Code session of the project folder as an agent (newest session per name).
+// Nothing is started: an imported agent only reads its history until you send it a message.
+async function importNamed(proj) {
+  const have = new Set([...agents.values()].map(a => a.sessionId).filter(Boolean));
+  const taken = new Set([...agents.values()].filter(a => a.projectId === proj.id).map(a => a.name.toLowerCase()));
+  const byName = new Map();
+  for (const s of await listSessions({ dir: proj.cwd, limit: 500 })) {
+    const title = (s.customTitle || '').trim();
+    if (!title || have.has(s.sessionId) || taken.has(title.toLowerCase())) continue;
+    const prev = byName.get(title.toLowerCase());
+    if (!prev || (s.lastModified || 0) > (prev.lastModified || 0)) byName.set(title.toLowerCase(), s);
+  }
+  const added = [];
+  for (const s of [...byName.values()].sort((x, y) => (y.lastModified || 0) - (x.lastModified || 0))) {
+    let cwd = proj.cwd;
+    try { if (s.cwd && fs.statSync(s.cwd).isDirectory()) cwd = path.resolve(s.cwd); } catch { /* keep the project folder */ }
+    const a = { id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(s.customTitle.trim()), cwd, model: '', permissionMode: 'default',
+      sessionId: s.sessionId, createdAt: Date.now(), updatedAt: s.lastModified || Date.now(), cost: 0,
+      last: 'Added from this folder. Close it in the terminal before you write to it here.' };
+    agents.set(a.id, a); added.push(a); emitAgent(a);
+  }
+  if (added.length) saveRoster();
+  return added;
+}
+
 const routes = {
   'GET /api/state': async (req, res) => {
     json(res, 200, { projects: [...projects.values()].map(publicProject), agents: [...agents.values()].map(publicAgent), home: os.homedir(), platform: process.platform, tokenRequired: !!TOKEN });
@@ -576,11 +601,13 @@ const routes = {
     let st; try { st = fs.statSync(cwd); } catch { /* missing */ }
     if (!st || !st.isDirectory()) return json(res, 400, { error: `Folder not found: ${cwd}` });
     const dup = [...projects.values()].find(p => samePath(p.cwd, cwd));
-    if (dup) return json(res, 200, { project: publicProject(dup), existing: true });
+    if (dup) return json(res, 200, { project: publicProject(dup), existing: true, imported: 0 });
     const p = { id: crypto.randomUUID(), name: String(b.name || '').trim().slice(0, 60) || path.basename(cwd) || cwd, cwd, note: String(b.note || '').slice(0, 4000), createdAt: Date.now() };
     projects.set(p.id, p); saveRoster();
     broadcast({ t: 'project', project: publicProject(p) });
-    json(res, 200, { project: publicProject(p) });
+    let imported = 0;
+    if (b.importNamed !== false) { try { imported = (await importNamed(p)).length; } catch (e) { console.error('[import]', e.message); } }
+    json(res, 200, { project: publicProject(p), imported });
   },
 
   // New agent, or resume a previous session as an agent (body.sessionId).
@@ -689,6 +716,12 @@ const server = http.createServer(async (req, res) => {
     }
     const key = `${req.method} ${url.pathname}`;
     if (routes[key]) return await routes[key](req, res, url);
+    const im = /^\/api\/projects\/([0-9a-f-]{36})\/import$/.exec(url.pathname);
+    if (im && req.method === 'POST') {
+      const p = projects.get(im[1]);
+      if (!p) return json(res, 404, { error: 'Project not found' });
+      return json(res, 200, { imported: (await importNamed(p)).length });
+    }
     const pm = /^\/api\/projects\/([0-9a-f-]{36})$/.exec(url.pathname);
     if (pm) {
       const p = projects.get(pm[1]);

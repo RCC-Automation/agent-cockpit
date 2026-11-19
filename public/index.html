@@ -142,6 +142,7 @@ details.tool pre{margin:6px 0;background:var(--surface-2);border:1px solid var(-
 .form label{display:flex;flex-direction:column;gap:5px;font-size:.75rem;font-weight:600;color:var(--ink-2);min-width:0}
 .form input[type=text],.form select,.form textarea,.find{border:1px solid var(--line);border-radius:7px;background:var(--surface);padding:7px 9px;min-width:0;width:100%;font-weight:400;color:var(--ink)}
 .form .wide{grid-column:1 / -1}
+.form .check{flex-direction:row;align-items:center;gap:8px;font-size:.85rem;font-weight:500;color:var(--ink)}
 .form .fixed{font-family:var(--mono);font-size:.8rem;font-weight:500;color:var(--ink);padding:7px 0}
 .err{color:var(--fail);font-weight:600}
 .list{display:flex;flex-direction:column;gap:6px;max-width:860px}
@@ -557,7 +558,7 @@ function viewNew() {
 }
 function viewResume() {
   const p = curProject(); const list = h('div', { class: 'list' }, h('span', { class: 'sub', text: 'Loading sessions…' }));
-  const find = h('input', { class: 'find', type: 'text', id: 'resume-find', placeholder: 'Filter by title or first message', 'aria-label': 'Filter sessions', style: 'max-width:860px' });
+  const find = h('input', { class: 'find', type: 'text', id: 'resume-find', placeholder: 'Filter by title or first message', 'aria-label': 'Filter sessions', style: 'flex:1 1 260px;max-width:620px' });
   let sessions = [];
   const paint = () => {
     list.textContent = ''; const q = find.value.toLowerCase();
@@ -566,6 +567,7 @@ function viewResume() {
     for (const s of hit) {
       list.append(h('div', { class: 'it' },
         h('div', { class: 'what' }, h('b', { text: s.title }), h('span', { text: [s.firstPrompt && s.firstPrompt !== s.title ? s.firstPrompt : null, s.gitBranch ? 'branch ' + s.gitBranch : null, s.cwd !== p.cwd ? s.cwdShort : null].filter(Boolean).join(' · ') || s.sessionId })),
+        Date.now() - s.lastModified < 180000 ? h('span', { class: 'pill s-work', title: 'Changed in the last three minutes, so it is probably open in a terminal' }, h('span', { class: 'dot' }), 'active now') : null,
         h('span', { class: 'when', text: ago(s.lastModified) + (ago(s.lastModified) === 'now' ? '' : ' ago') }),
         s.agent ? h('span', { class: 'pill s-idle', text: 'in cockpit as ' + s.agent })
           : h('button', { class: 'btn sm primary', type: 'button', text: 'Resume', onclick: async ev => {
@@ -579,20 +581,31 @@ function viewResume() {
   api('GET', `/api/sessions?projectId=${p.id}&limit=200`).then(d => { sessions = d.sessions; paint(); }).catch(x => { list.textContent = ''; list.append(h('span', { class: 'err', text: x.message })); });
   return h('div', { class: 'pane' }, h('h2', { text: 'Resume a session' }),
     h('span', { class: 'sub', text: `Previous Claude Code sessions recorded in ${p.cwd}. A resumed session becomes an agent in this project and continues with its full history. Close it in the terminal first: a session should be driven from one place at a time.` }),
-    find, list, h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', text: 'Back', onclick: () => go('chat') })));
+    h('div', { class: 'acts' }, find,
+      h('button', { class: 'btn', type: 'button', text: 'Add all named sessions', title: 'Adds every named session of this folder as an agent. Nothing is started.', onclick: async () => {
+        try { const d = await api('POST', `/api/projects/${p.id}/import`); await refresh(); toast(d.imported ? `${d.imported} agent${d.imported === 1 ? '' : 's'} added.` : 'No new named sessions in this folder.'); if (d.imported) selectProject(p.id, 'chat'); }
+        catch (x) { toast(x.message); }
+      } })),
+    list, h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', text: 'Back', onclick: () => go('chat') })));
 }
 function viewProject() {
   const err = h('span', { class: 'err wide' });
   const name = h('input', { type: 'text', id: 'proj-name', placeholder: 'for example Wiki', autocomplete: 'off' });
   const cwd = h('input', { type: 'text', id: 'proj-cwd', placeholder: 'D:\\projects\\wiki   or   ~/projects/wiki', autocomplete: 'off', spellcheck: 'false' });
   const note = h('textarea', { id: 'proj-note', rows: 3, placeholder: 'Optional. Notes every agent in this project receives, for example the goal and the rules of the team.' });
+  const auto = h('input', { type: 'checkbox', id: 'proj-auto', checked: true });
   const create = async body => {
     err.textContent = '';
-    try { const d = await api('POST', '/api/projects', body); if (!S.projects.find(x => x.id === d.project.id)) S.projects.push(d.project); selectProject(d.project.id, teamOf(d.project.id).length ? 'chat' : 'resume'); }
-    catch (x) { err.textContent = x.message; }
+    try {
+      const d = await api('POST', '/api/projects', { ...body, importNamed: auto.checked });
+      await refresh();
+      selectProject(d.project.id, teamOf(d.project.id).length ? 'chat' : 'resume');
+      if (d.imported) toast(`${d.imported} agent${d.imported === 1 ? '' : 's'} added from this folder.`);
+    } catch (x) { err.textContent = x.message; }
   };
   const form = h('form', { class: 'form', onsubmit: e => { e.preventDefault(); create({ name: name.value, cwd: cwd.value, note: note.value }); } },
-    h('label', null, 'Project name', name), h('label', null, 'Project folder', cwd), h('label', { class: 'wide' }, 'Team notes', note), err,
+    h('label', null, 'Project name', name), h('label', null, 'Project folder', cwd), h('label', { class: 'wide' }, 'Team notes', note),
+    h('label', { class: 'wide check' }, auto, 'Add the named sessions of this folder as agents automatically'), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Create project' }), S.projects.length ? h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') }) : null));
   const sug = h('div', { class: 'list' });
   api('GET', '/api/folders').then(d => {
@@ -623,6 +636,10 @@ function onAgent(a) {
   }
   renderBar(); renderRail();
   if (a.id === S.cur && S.view === 'chat') { if (!els.head) renderMain(); else renderHead(); }
+}
+async function refresh() {
+  const d = await api('GET', '/api/state');
+  S.projects = d.projects; S.home = d.home; S.agents = new Map(d.agents.map(a => [a.id, a]));
 }
 async function sync() {
   const d = await api('GET', '/api/state');
