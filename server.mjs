@@ -138,7 +138,7 @@ function publicAgent(a) {
   const r = rt(a.id);
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
-    sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
+    sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), adopted: !!(a.term && a.term.adopted && a.term.alive !== false), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
     interrupted: !!a.interrupted, login: a.login || null, cost: a.mode === 'watch' ? (r.watch.cost || 0) : (a.cost || 0) + r.queryCost, ctx: a.mode === 'watch' ? null : r.ctx ? r.ctx.percentage : (a.ctxPct ?? null), pending: r.pending.size, alive: !!r.q,
   };
 }
@@ -625,7 +625,7 @@ function checkWindows() {
 // Closes a window the cockpit opened, together with the Claude Code running in it.
 function closeWindow(a) {
   const t = a.term;
-  if (!termKnown(a) || t.alive === false) return Promise.resolve(false);
+  if (!termKnown(a) || t.alive === false || t.adopted) return Promise.resolve(false); // a window the person opened is never closed
   return new Promise(resolve => {
     const done = ok => { setWindowAlive(a, false); resolve(ok); };
     if (t.tmux) return execFile('tmux', ['kill-session', '-t', t.tmux], () => done(true));
@@ -637,6 +637,45 @@ function closeWindow(a) {
     const script = `$p = Get-Process -Id ${Number(t.pid)} -ErrorAction SilentlyContinue; if (-not $p) { 'gone' } else { $s = 0; try { $s = $p.StartTime.ToFileTimeUtc() } catch {}; ` +
       `if ("$s" -eq '${String(t.started).replace(/\D/g, '')}') { & taskkill.exe /PID ${Number(t.pid)} /T /F | Out-Null; 'closed' } else { 'other' } }`;
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(script)], { windowsHide: true, timeout: 20000 }, (err, stdout) => done(!err && /closed|gone/.test(String(stdout))));
+  });
+}
+
+// Finds windows the person opened by hand (Windows only). An agent without a window of its own is matched
+// to a running Claude Code whose command line resumes or names its session, for example
+// "claude --resume REBE". The cockpit then shows that window as open and can type into it. It tracks the
+// claude process itself, and it never closes such a window.
+let adoptBusy = false;
+function adoptWindows() {
+  if (process.platform !== 'win32' || adoptBusy) return;
+  const need = [...agents.values()].filter(a => (a.mode || 'own') === 'watch' && !(termKnown(a) && a.term.alive !== false));
+  if (!need.length) return;
+  adoptBusy = true;
+  const script = `Get-CimInstance Win32_Process -Filter "Name='claude.exe'" | ForEach-Object { $s = 0; try { $s = (Get-Process -Id $_.ProcessId -ErrorAction Stop).StartTime.ToFileTimeUtc() } catch {}; ` +
+    `Write-Output ("$($_.ProcessId)|$s|" + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.CommandLine))) }`;
+  execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(script)], { windowsHide: true, timeout: 30000 }, (err, stdout) => {
+    adoptBusy = false;
+    if (err) return;
+    const taken = new Set([...agents.values()].filter(a => termKnown(a) && a.term.alive !== false).map(a => a.term.pid));
+    const procs = [];
+    for (const l of String(stdout).split(/\r?\n/)) {
+      const m = /^(\d+)\|(\d+)\|(\S*)$/.exec(l.trim());
+      if (!m || m[2] === '0' || taken.has(Number(m[1]))) continue;
+      const cmd = Buffer.from(m[3], 'base64').toString('utf8');
+      if (/--output-format|--print|\s-p\s/.test(cmd)) continue; // not a window someone sits at
+      const keys = [];
+      for (const k of cmd.matchAll(/(?:--resume|-r|--name|-n)[ =]+(?:"([^"]+)"|'([^']+)'|(\S+))/g)) keys.push((k[1] || k[2] || k[3]).toLowerCase());
+      if (keys.length) procs.push({ pid: Number(m[1]), started: m[2], keys });
+    }
+    procs.sort((x, y) => (BigInt(y.started) > BigInt(x.started) ? 1 : -1)); // newest first
+    for (const a of need) {
+      if (!agents.has(a.id) || (termKnown(a) && a.term.alive !== false)) continue;
+      const mine = [a.sessionId, a.title, a.name].filter(Boolean).map(v => String(v).toLowerCase());
+      const p = procs.find(x => !x.used && x.keys.some(k => mine.includes(k)));
+      if (!p) continue;
+      p.used = true;
+      a.term = { pid: p.pid, started: p.started, image: 'claude.exe', alive: true, openedAt: Date.now(), adopted: true };
+      saveRoster(); emitAgent(a);
+    }
   });
 }
 
@@ -1075,7 +1114,13 @@ public static class CockpitKeys {
     if (check && ShowsQuestion()) { FreeConsole(); return "QUESTION"; }
     IntPtr h = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
     if (h == new IntPtr(-1)) { FreeConsole(); return "could not open its input (" + Marshal.GetLastWin32Error() + ")"; }
-    bool ok = Keys(h, text); if (enter) { Thread.Sleep(600); ok = ok && Keys(h, "\\r"); }
+    bool ok = Keys(h, text);
+    if (enter) {
+      Thread.Sleep(600);
+      // A question that came up in the meantime: Enter is not pressed. The text stays at the prompt.
+      if (check && ShowsQuestion()) { CloseHandle(h); FreeConsole(); return "QUESTION"; }
+      ok = ok && Keys(h, "\\r");
+    }
     CloseHandle(h); FreeConsole();
     return ok ? "sent" : "typing failed (" + Marshal.GetLastWin32Error() + ")";
   }
@@ -1109,6 +1154,9 @@ function typeBlock(a, force) {
   if (force) return null;
   const r = rt(a.id), info = r.watch.info, mode = r.watch.mode || a.permissionMode;
   if (r.status === 'need' && info && info.kind === 'ask') return { why: 'it is asking a question in its window, and typed text would answer that question', hard: false };
+  // On Windows the typing helper reads the window and sees whether a question is really showing, so no
+  // guessing is needed there. A busy agent simply queues the message.
+  if (process.platform === 'win32' && !a.term.tmux) return null;
   if (mode !== 'bypassPermissions' && r.status === 'need') return { why: 'it may be showing a permission question in its window, and Enter would answer it', hard: false };
   if (mode !== 'bypassPermissions' && r.status === 'work') return { why: 'it is busy and could show a permission question at any moment', hard: false };
   return null;
@@ -1297,7 +1345,7 @@ const agentRoutes = {
   'POST stop': async (a, req, res) => {
     const r = rt(a.id);
     if (a.mode === 'watch') {
-      if (!termKnown(a) || a.term.alive === false) return json(res, 409, { error: `The cockpit did not open a window for ${a.name}, so it cannot close one. Close its terminal window yourself.` });
+      if (!termKnown(a) || a.term.alive === false || a.term.adopted) return json(res, 409, { error: `The cockpit did not open a window for ${a.name}, so it cannot close one. Close its terminal window yourself.` });
       await closeWindow(a);
       r.status = 'idle'; touch(a, 'Stopped. Its terminal window was closed.');
       return json(res, 200, { ok: true });
@@ -1515,6 +1563,8 @@ function start() {
     setInterval(checkWindows, 8000);
     setTimeout(scanProjects, 800);
     setTimeout(checkWindows, 1500);
+    setInterval(adoptWindows, 20000);
+    setTimeout(adoptWindows, 4000);
     console.log(`\n  Agent Cockpit is running:  ${shownUrl()}${TOKEN ? '?token=…' : ''}`);
     console.log(`  ${projects.size} project(s), ${agents.size} agent(s) · data in ${DATA_DIR}`);
     console.log('  Agents in terminal windows keep running when the cockpit stops.');
