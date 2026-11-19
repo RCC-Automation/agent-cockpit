@@ -165,13 +165,23 @@ details.tool .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-wi
 details.tool .r{flex:none;color:var(--ink-3)}
 details.tool .r.err{color:var(--fail)} details.tool .r.run{color:var(--work)}
 details.tool pre{margin:6px 0;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;color:var(--ink)}
-details.steps{align-self:flex-start;max-width:100%;min-width:0;font-size:.78rem;color:var(--ink-2);border:1px solid var(--line);border-radius:8px;background:var(--surface-2);padding:4px 10px}
+details.steps{align-self:flex-start;max-width:100%;min-width:0;font-size:.9rem;color:var(--ink-3);padding:2px 0}
 details.steps > summary{cursor:pointer;list-style:none;display:flex;gap:8px;align-items:baseline;min-width:0}
 details.steps > summary::-webkit-details-marker{display:none}
-details.steps > summary::before{content:"\25B8";color:var(--ink-3);flex:none}
-details.steps[open] > summary::before{content:"\25BE"}
+details.steps > summary::after{content:"\203A";color:var(--ink-3);flex:none;font-size:1.1em;line-height:1}
+details.steps[open] > summary::after{content:"\2039"}
+details.steps > summary:hover{color:var(--ink-2)}
 details.steps > summary b{color:var(--ink);font-weight:600;flex:none}
-details.steps > summary .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-family:var(--mono);font-size:.72rem}
+details.steps > summary .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+details.steps > summary .t code{font-family:var(--mono);font-size:.85em;color:var(--ink-2)}
+.wf{align-self:flex-start;min-width:min(320px,100%);max-width:100%;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);padding:10px 14px}
+.wf > summary{cursor:pointer;list-style:none;display:grid;grid-template-columns:1fr auto;gap:4px 12px}
+.wf > summary::-webkit-details-marker{display:none}
+.wf .tt{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wf .chev{color:var(--ink-3)}
+.wf .sub{grid-column:1/-1;color:var(--ink-3);font-size:.85rem;display:flex;gap:14px}
+.wf .sub .run{color:var(--work)} .wf .sub .err{color:var(--fail)}
+.wf pre{margin:8px 0 0;font-size:.75rem;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;color:var(--ink-2)}
 details.steps > summary .r{flex:none;font-weight:600}
 details.steps .r.err{color:var(--fail)} details.steps .r.run{color:var(--work)}
 .steps-body{display:flex;flex-direction:column;gap:6px;padding:8px 0 4px}
@@ -205,6 +215,16 @@ details.peer[open] summary .t{display:none}
 .hint{font-size:.7rem;color:var(--ink-3)}
 .mic{display:inline-flex;align-items:center;gap:6px}
 .mic svg{width:14px;height:14px;display:block}
+.mic-wrap{display:inline-flex;gap:4px}
+.art{align-self:flex-start;display:flex;align-items:center;gap:12px;min-width:min(340px,100%);max-width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);color:var(--ink);cursor:pointer;text-align:left;font:inherit}
+.art:hover{border-color:var(--ink-3)}
+.art svg{width:16px;height:16px;flex:none;color:var(--ink-2)}
+.art .tt{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.art .st{color:var(--ink-3);font-size:.85rem;white-space:nowrap}
+.art .chev{width:14px;height:14px;color:var(--ink-3)}
+a.artlink{display:inline-flex;align-items:center;gap:4px;text-decoration:underline;text-underline-offset:2px}
+a.artlink svg{width:14px;height:14px;flex:none}
+.mic-lang{min-width:3em;font-variant-numeric:tabular-nums}
 .mic.on{border-color:var(--fail);color:var(--fail);background:color-mix(in srgb,var(--fail) 10%,var(--surface))}
 .mic.on svg{animation:pulse 1.2s ease-in-out infinite}
 @media (prefers-reduced-motion:reduce){.mic.on svg{animation:none}}
@@ -316,14 +336,24 @@ function curAgent() { return S.agents.get(S.cur) || null; }
 function curProject() { return S.projects.find(p => p.id === S.project) || null; }
 
 // ───────── small, safe Markdown renderer ─────────
-function md(src) {
+const ART_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16M5.5 8h9A1.5 1.5 0 0 1 16 9.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 4 18.5v-9A1.5 1.5 0 0 1 5.5 8Z"/></svg>';
+// links: names for claude.ai artifact links in this text ({ url: title }). Artifact links show as their name with an icon.
+function md(src, links) {
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const unesc = s => s.replace(/&amp;/g, '&');
+  const anchor = (url, label) => {
+    const art = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+$/.test(unesc(url));
+    if (art && label == null) label = esc((links && links[unesc(url)]) || 'Artifact');
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer"${art ? ' class="artlink"' : ''}>${art ? ART_ICON : ''}${label == null ? url : label}</a>`;
+  };
   const inline = s => {
-    s = esc(s); const codes = [];
-    s = s.replace(/`([^`\n]+)`/g, (m, c) => { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
+    s = esc(s); const keep = [];
+    const hold = html => { keep.push(html); return '\u0000' + (keep.length - 1) + '\u0000'; };
+    s = s.replace(/`([^`\n]+)`/g, (m, c) => hold('<code>' + c + '</code>'));
+    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, t, u) => hold(anchor(u, t)));
+    s = s.replace(/https?:\/\/(?:(?!&lt;|&gt;|&quot;)[^\s<>\u0000])+/g, u => { const tail = /[.,;:!?)\]]+$/.exec(u); const url = tail ? u.slice(0, -tail[0].length) : u; return hold(anchor(url)) + (tail ? tail[0] : ''); });
     s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[\s(])\*([^*\s][^*\n]*)\*(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>');
-    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    return s.replace(/\u0000(\d+)\u0000/g, (m, i) => '<code>' + codes[i] + '</code>');
+    return s.replace(/\u0000(\d+)\u0000/g, (m, i) => keep[i]);
   };
   const isList = l => /^\s*([-*]|\d+\.)\s+/.test(l), isRow = l => /^\s*\|.*\|\s*$/.test(l);
   const out = []; const lines = src.replace(/\r/g, '').split('\n'); let i = 0;
@@ -421,6 +451,7 @@ function renderMain() {
   paintPreview();
   renderHead();
   const thread = els.thread;
+  pingView();
   loadItems(a.id).then(() => { if (els.thread !== thread || !S.items.has(a.id)) return; thread.textContent = ''; for (const it of S.items.get(a.id)) if (!quietItem(it)) place(thread, renderItem(it, a), it); scrollDown(true); })
     .catch(e => els.thread.append(h('div', { class: 'note', text: 'Could not load the chat: ' + e.message })));
 }
@@ -432,6 +463,22 @@ function renderHead() {
       if (e.target.value === 'bypassPermissions' && !confirm(`Allow everything for ${a.name}?\n\n${ALLOW_ALL_WARNING}` + (watch ? '\n\nIt applies the next time the cockpit opens its terminal window.' : ''))) { e.target.value = a.permissionMode; return; }
       api('POST', `/api/agents/${a.id}/settings`, { permissionMode: e.target.value }).catch(x => toast(x.message)); } },
     Object.entries(MODES).map(([k, v]) => h('option', { value: k, text: v, selected: a.permissionMode === k })));
+  // Model switch: types "/model <name>" into the agent's window. Only while the cockpit can type into it.
+  const MODEL_CHOICES = [['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']];
+  const cur = a.model || '';
+  const model = watch && a.talk ? h('select', { title: 'Switch the model. Types /model <name> into its terminal window. This also changes the default model for your new Claude Code sessions.', 'aria-label': 'Model', onchange: async e => {
+      let v = e.target.value;
+      if (v === 'custom') { v = (prompt('Model name (as you would type it after /model)', cur) || '').trim(); if (!v) { e.target.value = cur; return; } }
+      if (!v || v === cur) { e.target.value = cur; return; }
+      e.target.disabled = true;
+      const ok = await send(a, `/model ${v}`, []);
+      if (ok) await api('POST', `/api/agents/${a.id}/settings`, { model: v }).catch(x => toast(x.message));
+      else { e.target.value = cur; e.target.disabled = false; }
+    } },
+    [h('option', { value: '', text: 'Model…', disabled: true, selected: !cur }),
+     ...MODEL_CHOICES.map(([v, t]) => h('option', { value: v, text: t, selected: cur === v })),
+     cur && !MODEL_CHOICES.some(([v]) => v === cur) ? h('option', { value: cur, text: cur, selected: true }) : null,
+     h('option', { value: 'custom', text: 'Other…' })].filter(Boolean)) : null;
   const p = curProject(); const sub = p && a.cwd !== p.cwd ? a.cwdShort : null;
   els.head.append(...[
     h('span', { class: 'cs', text: a.name, title: 'Click to rename', onclick: () => { const n = prompt('Agent name', a.name); if (n && n.trim()) api('POST', `/api/agents/${a.id}/settings`, { name: n.trim() }).catch(x => toast(x.message)); } }),
@@ -439,6 +486,7 @@ function renderHead() {
     h('span', { class: 'meta', text: [sub, watch ? null : (a.modelResolved || a.model || 'default model'), a.login && !a.login.api ? a.login.label : null, a.cost ? '$' + a.cost.toFixed(2) : null].filter(Boolean).join(' · '), title: a.cwd }),
     a.login && a.login.api ? h('span', { class: 'pill s-failed', text: a.login.label, title: 'This agent is not using your Claude subscription' }) : null,
     watch ? h('span', { class: 'pill s-idle', text: a.window === 'closed' ? 'terminal window closed' : a.adopted ? 'runs in a window you opened' : a.window === 'open' ? 'runs in its terminal window' : 'runs in a terminal', title: a.adopted ? 'You opened this window yourself. The cockpit found it, can type into it, and never closes it' : 'The agent lives in a terminal window' }) : null,
+    model,
     mode,
     watch && a.talk && a.status === 'work' ? h('button', { class: 'btn sm', type: 'button', text: 'Interrupt', title: 'Press Esc in its terminal window: it stops what it is doing and waits for you', onclick: () => api('POST', `/api/agents/${a.id}/interrupt`).catch(x => toast(x.message)) }) : null,
     watch && a.window === 'open' && !a.adopted ? h('button', { class: 'btn sm danger', type: 'button', text: 'Close window', title: 'Close its terminal window and stop the agent', onclick: () => stopTerm(a) }) : null,
@@ -458,14 +506,18 @@ function renderItem(it, a) {
       it.images && it.images.length ? h('div', { class: 'imgs' }, it.images.map(im => h('img', { src: `data:${im.mediaType};base64,${im.data}`, alt: 'Attached image', onclick: ev => ev.target.classList.toggle('big') }))) : null,
       it.text ? h('span', { text: it.text }) : null);
   } else if (it.k === 'text') {
-    e = h('div', { class: 'msg ai md', html: md(it.text || '') });
+    e = h('div', { class: 'msg ai md', html: md(it.text || '', it.links) });
+  } else if (it.k === 'tool' && it.name === 'Workflow') {
+    e = wfCard(it);
+  } else if (it.k === 'tool' && it.artifact && it.status !== 'err') {
+    e = artCard(it);
   } else if (isShowcase(it)) {
     const art = it.name === 'Artifact';
     const link = (/(https:\/\/claude\.ai\/[^\s"')]*artifact[^\s"')]*)/.exec(it.result || '') || [])[1];
     e = h('div', { class: 'files' }, it.files.map(f => fileCard({ ...f, link }, art ? 'Artifact' : 'File', art ? (it.input.title || f.name) : f.name, art ? it.input.description : it.input.caption)));
   } else if (it.k === 'tool') {
     const label = it.status === 'run' ? 'running' : it.status === 'err' ? 'failed' : '';
-    e = h('details', { class: 'tool', 'data-label': stepLabel(it.name), 'data-status': it.status, 'data-sum': (it.summary || '').slice(0, 90) },
+    e = h('details', { class: 'tool', 'data-label': stepLabel(it.name), 'data-name': it.name || '', 'data-file': stepFile(it.input), 'data-status': it.status, 'data-sum': (it.summary || '').slice(0, 90) },
       h('summary', null, h('b', { text: stepLabel(it.name) }), h('span', { class: 't', text: it.summary || '' }), label ? h('span', { class: 'r ' + it.status, text: label }) : null),
       h('pre', { text: typeof it.input === 'string' ? it.input : JSON.stringify(it.input, null, 2) }),
       it.files ? h('div', { class: 'acts' }, it.files.map(f => h('button', { class: 'btn sm', type: 'button', text: 'Preview ' + f.name, onclick: () => openPreview(f) }))) : null,
@@ -529,7 +581,20 @@ function askCard(it, a) {
   return card;
 }
 // What an agent publishes or sends is shown as a card in the conversation, with a preview next to the chat.
+// An artifact card like the Claude app's: icon, name, what happened, arrow. Click shows the agent's own copy
+// next to the chat when there is one, otherwise it opens the artifact on claude.ai.
+function artCard(it) {
+  const A = it.artifact, local = it.files && it.files[0];
+  const word = it.status === 'run' ? (A.action === 'open' ? 'Opening…' : 'Publishing…') : A.action === 'open' ? 'Opened' : 'Published';
+  const go = () => { if (local) openPreview({ ...local, link: A.url }); else if (A.url) window.open(A.url, '_blank', 'noopener'); };
+  const b = h('button', { class: 'art', type: 'button', title: A.description || (local ? 'Show it next to the chat' : 'Open on claude.ai'), onclick: go },
+    h('span', { class: 'tt', text: A.title }), h('span', { class: 'st', text: word }));
+  b.insertAdjacentHTML('afterbegin', ART_ICON);
+  b.insertAdjacentHTML('beforeend', '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m9 6 6 6-6 6"/></svg>');
+  return b;
+}
 function isShowcase(it) {
+  if (it.k === 'tool' && (it.name === 'Workflow' || (it.artifact && it.status !== 'err'))) return true;
   return it.k === 'tool' && it.files && it.files.length && it.input &&
     ((it.name === 'Artifact' && (!it.input.action || it.input.action === 'publish')) || it.name === 'SendUserFile');
 }
@@ -563,16 +628,66 @@ function paintPreview() {
 
 // Execution steps (tool calls) are folded into one line between the messages, so the conversation reads on its own.
 function stepLabel(name) { const m = /^mcp__(.+?)__(.+)$/.exec(name || ''); return m ? `${m[2]} (${m[1]})` : (name || 'Tool'); }
+// Steps read like a sentence, as in the Claude app: "Searched code, ran 4 commands, read tool.py".
+function stepFile(input) {
+  const f = input && (input.file_path || input.notebook_path);
+  return typeof f === 'string' ? f.split(/[\\/]/).pop() : '';
+}
+const STEP_KINDS = [
+  [/^(Grep|Glob|LS)$/, 'search', () => 'searched code'],
+  [/^(Bash|PowerShell|BashOutput|KillShell|Monitor)$/, 'cmd', n => n === 1 ? 'ran a command' : `ran ${n} commands`],
+  [/^Read$/, 'read', (n, f) => n === 1 && f ? ['read ', f] : `read ${n} file${n === 1 ? '' : 's'}`],
+  [/^(Edit|MultiEdit|NotebookEdit)$/, 'edit', (n, f) => n === 1 && f ? ['edited ', f] : `edited ${n} files`],
+  [/^Write$/, 'write', (n, f) => n === 1 && f ? ['wrote ', f] : `wrote ${n} files`],
+  [/^WebSearch$/, 'web', () => 'searched the web'],
+  [/^WebFetch$/, 'fetch', n => n === 1 ? 'fetched a page' : `fetched ${n} pages`],
+  [/^(Agent|Task)$/, 'agent', n => n === 1 ? 'ran an agent' : `ran ${n} agents`],
+  [/^Skill$/, 'skill', () => 'ran skill'],
+  [/^ToolSearch$/, 'tools', () => 'loaded tools'],
+  [/^(TodoWrite|TaskCreate|TaskUpdate)$/, 'todo', () => 'updated the to-do list'],
+];
+function stepPhrase(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const name = r.dataset.name || '';
+    const mcp = /^mcp__(?:plugin_[^_]+_)?(.+?)__/.exec(name);
+    const kind = STEP_KINDS.find(([re]) => re.test(name));
+    const key = kind ? kind[1] : mcp ? 'mcp:' + mcp[1] : 'other:' + name;
+    if (!groups.has(key)) groups.set(key, { kind, mcp: mcp && mcp[1], name, n: 0, files: new Set() });
+    const g = groups.get(key); g.n++; if (r.dataset.file) g.files.add(r.dataset.file);
+  }
+  const nodes = [];
+  let first = true;
+  for (const g of groups.values()) {
+    const fileKind = g.kind && ['read', 'edit', 'write'].includes(g.kind[1]);
+    let p = g.kind ? g.kind[2](fileKind ? (g.files.size || g.n) : g.n, g.files.size === 1 ? [...g.files][0] : '')
+      : 'used ' + (g.mcp || g.name || 'a tool');
+    if (!Array.isArray(p)) p = [p];
+    if (!first) nodes.push(', ');
+    nodes.push(first ? p[0][0].toUpperCase() + p[0].slice(1) : p[0]);
+    if (p[1]) nodes.push(h('code', { text: p[1] }));
+    first = false;
+  }
+  return nodes;
+}
 function refreshGroup(g) {
   const rows = [...g.lastChild.children];
   if (!rows.length) return g.remove();
-  const counts = new Map(); let running = null, failed = 0;
-  for (const r of rows) { counts.set(r.dataset.label, (counts.get(r.dataset.label) || 0) + 1); if (r.dataset.status === 'run') running = r; if (r.dataset.status === 'err') failed++; }
-  const parts = [...counts].map(([n, c]) => c > 1 ? `${n} ×${c}` : n);
+  let running = null, failed = 0;
+  for (const r of rows) { if (r.dataset.status === 'run') running = r; if (r.dataset.status === 'err') failed++; }
   g.firstChild.replaceChildren(
-    h('b', { text: `${rows.length} step${rows.length === 1 ? '' : 's'}` }),
-    h('span', { class: 't', text: running ? `running: ${running.dataset.label} ${running.dataset.sum}` : parts.slice(0, 6).join(' · ') + (parts.length > 6 ? ' · …' : '') }),
+    h('span', { class: 't', title: `${rows.length} step${rows.length === 1 ? '' : 's'}` }, ...(running ? [`${running.dataset.label}: ${running.dataset.sum}`] : stepPhrase(rows))),
     ...[failed ? h('span', { class: 'r err', text: `${failed} failed` }) : null, running ? h('span', { class: 'r run', text: 'working' }) : null].filter(Boolean));
+}
+// A workflow gets its own card, as in the Claude app: its name, "Workflow", and whether it still runs.
+function wfCard(it) {
+  const i = it.input || {};
+  const name = (typeof i.script === 'string' && (/name:\s*['"`]([^'"`]+)/.exec(i.script) || [])[1]) || i.name
+    || (typeof i.scriptPath === 'string' ? i.scriptPath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') : '') || 'Workflow';
+  const state = it.status === 'run' ? h('span', { class: 'run', text: 'running' }) : it.status === 'err' ? h('span', { class: 'err', text: 'failed' }) : h('span', { text: 'started' });
+  return h('details', { class: 'wf' },
+    h('summary', null, h('span', { class: 'tt', text: name }), h('span', { class: 'chev', text: '›' }), h('span', { class: 'sub' }, h('span', { text: 'Workflow' }), state)),
+    it.result ? h('pre', { text: it.result }) : null);
 }
 function place(thread, node, it) {
   if (S.detail || it.k !== 'tool' || isShowcase(it)) { thread.append(node); return; }
@@ -697,14 +812,25 @@ function micButton(ta) {
     b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); label.textContent = 'Listening';
     S.micStop = stop; ta.focus();
   });
-  return { el: b, stop };
+  // One click switches the dictation language: English, Spanish, German. The full list is under settings.
+  const QUICK = [['en-US', 'EN'], ['es-ES', 'ES'], ['de-DE', 'DE']];
+  const langNow = () => store.get('cockpit.speech') || navigator.language || 'en-US';
+  const short = () => { const l = langNow(); const q = QUICK.find(([k]) => k === l); return q ? q[1] : l.slice(0, 2).toUpperCase(); };
+  const lang = h('button', { class: 'btn mic-lang', type: 'button', title: 'Dictation language. Click to switch: English, Spanish, German.', text: short() });
+  lang.addEventListener('click', () => {
+    const i = QUICK.findIndex(([k]) => k === langNow());
+    store.set('cockpit.speech', QUICK[(i + 1) % QUICK.length][0]);
+    lang.textContent = short();
+    if (rec) { stop(); b.click(); } // listening: start again in the new language
+  });
+  const el = h('span', { class: 'mic-wrap' }, b, lang);
+  return { el, stop };
 }
 
 // ───────── composer ─────────
 async function send(a, text, images, force) {
   try {
-    const d = await api('POST', `/api/agents/${a.id}/message`, { text, images: images.map(i => ({ mediaType: i.mediaType, data: i.data })), force: !!force });
-    if (d.typed) toast(`Typed into ${a.name}'s terminal window.`);
+    await api('POST', `/api/agents/${a.id}/message`, { text, images: images.map(i => ({ mediaType: i.mediaType, data: i.data })), force: !!force });
     return true;
   } catch (e) {
     if (e.data && e.data.canForce && !force && confirm(`${e.message}\n\nType it into the window anyway?`)) return send(a, text, images, true);
@@ -735,7 +861,7 @@ function composer(a) {
   const box = h('div', { class: 'attach' });
   const paint = () => { box.textContent = ''; S.attach.forEach((im, i) => box.append(h('span', { class: 'th' }, h('img', { src: im.url, alt: 'Attachment' }), h('button', { type: 'button', text: '×', 'aria-label': 'Remove image', onclick: () => { S.attach.splice(i, 1); paint(); } })))); box.hidden = !S.attach.length; };
   const add = async files => { for (const f of files) { if (!f.type.startsWith('image/')) { toast('Only images can be attached for now.'); continue; } try { S.attach.push(await fileToImage(f)); } catch (e) { toast(e.message); } } paint(); };
-  const ta = h('textarea', { id: 'msg', rows: 1, placeholder: a.mode === 'watch' ? `Message ${a.name}   ·   it is typed into its terminal window` : `Message ${a.name}   ·   / for commands   ·   paste or drop images`, 'aria-label': `Message ${a.name}`, value: S.drafts.get(a.id) || '' });
+  const ta = h('textarea', { id: 'msg', rows: 1, placeholder: `Message ${a.name}`, 'aria-label': `Message ${a.name}`, value: S.drafts.get(a.id) || '' });
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(220, ta.scrollHeight + 2) + 'px'; };
   const menu = h('div', { class: 'cmds', hidden: true });
   const suggest = () => {
@@ -1082,7 +1208,11 @@ $('btn-off').addEventListener('click', () => {
 S.detail = store.get('cockpit.detail') === '1';
 setInterval(renderRail, 30000);
 // Tell the server which terminal agent is on screen, so it keeps that chat up to date.
-setInterval(() => { const a = curAgent(); if (a && a.mode === 'watch' && S.view === 'chat' && !document.hidden) fetch(`/api/agents/${a.id}/view`, { method: 'POST' }).catch(() => {}); }, 8000);
+// Tell the server which chat is on screen, so it follows that session file closely: at once when the tab
+// comes back or another agent is opened, then every few seconds.
+function pingView() { const a = curAgent(); if (a && a.mode === 'watch' && S.view === 'chat' && !document.hidden) fetch(`/api/agents/${a.id}/view`, { method: 'POST' }).catch(() => {}); }
+setInterval(pingView, 5000);
+document.addEventListener('visibilitychange', pingView);
 connect();
 </script>
 </body>

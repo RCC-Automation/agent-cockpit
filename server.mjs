@@ -280,6 +280,8 @@ function itemsFromHistory(messages, a, live = false) {
     } else if (m.type === 'assistant' && Array.isArray(content)) {
       content.forEach((b, i) => {
         if (b.type === 'text' && b.text.trim()) items.push({ k: 'text', id: `${m.uuid}:${i}`, text: b.text });
+        // Visible thinking: the Claude app shows it between the steps, so the cockpit does too.
+        else if (b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) items.push({ k: 'text', id: `${m.uuid}:${i}`, text: b.thinking, thought: true });
         else if (b.type === 'tool_use') {
           const it = { k: 'tool', id: b.id, name: b.name, summary: toolSummary(b.name, b.input, cwd), input: b.input, files: viewFiles(a, b.input), result: '', status: 'ok' };
           tools.set(b.id, it); items.push(it);
@@ -289,10 +291,92 @@ function itemsFromHistory(messages, a, live = false) {
       items.push({ k: 'note', id: m.uuid, text: 'Context was compacted here' });
     }
   }
+  markArtifacts(items, a);
   // In a session that is still running, a last tool call without a result is still in progress.
   const tail = items[items.length - 1];
   if (live && tail && tail.k === 'tool' && !tail.result) tail.status = 'run';
   return items;
+}
+
+// Artifacts an agent published or opened get a card in the chat, like in the Claude app: name, what
+// happened, and a link. The name comes from the call, from the page's <title>, or from an earlier call
+// with the same link.
+const ARTIFACT_URL = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/;
+const titleCache = new Map();
+function htmlTitle(file) {
+  try {
+    const st = fs.statSync(file), c = titleCache.get(file);
+    if (c && c.mtime === st.mtimeMs) return c.title;
+    const fd = fs.openSync(file, 'r'); const buf = Buffer.alloc(Math.min(st.size, 65536));
+    try { fs.readSync(fd, buf, 0, buf.length, 0); } finally { fs.closeSync(fd); }
+    const m = /<title[^>]*>([^<]{1,200})<\/title>/i.exec(buf.toString('utf8'));
+    const title = m ? m[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim() : '';
+    titleCache.set(file, { mtime: st.mtimeMs, title });
+    return title;
+  } catch { return ''; }
+}
+// Names of artifacts seen in any session, kept across restarts, so an artifact that was only opened
+// (the tool's answer carries no name) still shows its name.
+const NAMES_FILE = path.join(DATA_DIR, 'artifact-names.json');
+const artifactNames = new Map((() => { try { return Object.entries(JSON.parse(fs.readFileSync(NAMES_FILE, 'utf8'))); } catch { return []; } })());
+let namesTimer = null;
+function rememberName(url, title) {
+  if (!url || !title || artifactNames.get(url) === title) return;
+  artifactNames.set(url, title);
+  clearTimeout(namesTimer);
+  namesTimer = setTimeout(() => { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(NAMES_FILE, JSON.stringify(Object.fromEntries(artifactNames), null, 1)); } catch { /* next time */ } }, 2000);
+}
+function nameItems(items, names) {
+  for (const it of items) if (it.artifact && it.artifact.title === 'Artifact' && names.has(it.artifact.url)) it.artifact.title = names.get(it.artifact.url);
+  for (const it of items) if (it.k === 'text' && ARTIFACT_URL.test(it.text)) {
+    const links = Object.fromEntries([...names].filter(([u]) => it.text.includes(u)));
+    if (Object.keys(links).length) it.links = links;
+  }
+}
+// Looks once through the other sessions of the same project folder for the call that published this link.
+const nameLookups = new Set();
+async function lookupName(url, a) {
+  if (nameLookups.has(url)) return; nameLookups.add(url);
+  const file = sessionFile(a); if (!file) return;
+  const dir = path.dirname(file);
+  let files = [];
+  try { files = (await fs.promises.readdir(dir)).filter(f => f.endsWith('.jsonl')).map(f => path.join(dir, f)); } catch { return; }
+  for (const f of files) {
+    let text; try { text = await fs.promises.readFile(f, 'utf8'); } catch { continue; }
+    if (!text.includes(url)) continue;
+    for (const line of text.split('\n')) {
+      if (!line.includes('"Artifact"')) continue;
+      let m; try { m = JSON.parse(line); } catch { continue; }
+      for (const b of Array.isArray(m.message?.content) ? m.message.content : []) {
+        if (b.type !== 'tool_use' || b.name !== 'Artifact' || !b.input || (b.input.action && b.input.action !== 'publish')) continue;
+        const title = String(b.input.title || '').trim() || (typeof b.input.file_path === 'string' ? htmlTitle(b.input.file_path) : '');
+        if (title && (b.input.url === url || line.includes(url))) rememberName(url, title);
+      }
+    }
+    if (artifactNames.has(url)) break;
+  }
+  if (!artifactNames.has(url)) return;
+  const r = rt(a.id);
+  nameItems(r.items, artifactNames);
+  broadcast({ t: 'reset', agentId: a.id });
+}
+function markArtifacts(items, a) {
+  const known = new Map();
+  for (const it of items) {
+    if (it.k !== 'tool' || it.name !== 'Artifact' || !it.input) continue;
+    const act = it.input.action || 'publish';
+    if (act !== 'publish' && act !== 'open') continue;
+    if (act === 'publish' && it.input.asset) continue;
+    const url = (ARTIFACT_URL.exec(String(it.input.url || '')) || ARTIFACT_URL.exec(it.result || '') || [])[0] || '';
+    let title = String(it.input.title || '').trim();
+    if (!title && act === 'publish' && typeof it.input.file_path === 'string') title = htmlTitle(it.input.file_path);
+    if (url && title) { known.set(url, title); rememberName(url, title); }
+    it.artifact = { url, title: title || 'Artifact', action: act, description: String(it.input.description || '') };
+  }
+  // Cards whose name is in another call or another session, and artifact links in text, use the same names.
+  const names = new Map([...artifactNames, ...known]);
+  nameItems(items, names);
+  if (a) for (const it of items) if (it.artifact && it.artifact.title === 'Artifact' && it.artifact.url) lookupName(it.artifact.url, a).catch(() => {});
 }
 
 const ensureHistory = a => loadWatched(a);
@@ -425,6 +509,8 @@ async function pollWatched(a) {
   let s = watchState(w.info, Date.now() - w.mtime);
   if (!s) return;
   if (a.term && a.term.alive === false && (s[0] === 'work' || s[0] === 'need')) s = ['idle', 'Its terminal window is closed.'];
+  // An agent with no open window is not running, so it is idle, even when its last word was an answer.
+  if (s[0] === 'review' && !wakeState(a)) s = ['idle', s[1]];
   const last = s[1] == null ? (a.last || '') : s[1].replace(/\s+/g, ' ').slice(0, 200);
   const at = Math.round(w.mtime);
   if (r.status !== s[0] || a.last !== last || a.updatedAt !== at) {
@@ -1008,6 +1094,7 @@ const agentRoutes = {
   'GET items': async (a, req, res) => {
     const r = rt(a.id);
     r.viewedAt = Date.now();
+    try { await pollWatched(a); } catch { /* next round */ }
     await ensureHistory(a);
     json(res, 200, { items: r.items, commands: r.commands.length ? r.commands : (a.commands || []) });
   },
@@ -1060,7 +1147,8 @@ const agentRoutes = {
     json(res, 200, { agent: publicAgent(a) });
   },
   // The browser says it is looking at this agent, so its chat is kept up to date.
-  'POST view': async (a, req, res) => { rt(a.id).viewedAt = Date.now(); json(res, 200, { ok: true }); },
+  // Reading the session file at once means the newest message shows without waiting for the next round.
+  'POST view': async (a, req, res) => { rt(a.id).viewedAt = Date.now(); try { await pollWatched(a); } catch { /* next round */ } json(res, 200, { ok: true }); },
   // Opens a terminal window running this agent. The terminal owns the session from then on.
   'POST terminal': async (a, req, res) => {
     try { await openTerminal(a); } catch (e) { return json(res, 500, { error: e.message }); }
