@@ -10,9 +10,9 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Live view of your terminals.** Named Claude Code sessions that run in a terminal in the project folder appear in
   the roster by themselves, with chat and status live. A window you opened yourself can be watched but not written
   to; close it and use Open terminal to get both.
-- **Take over.** Close an agent in its terminal, click Take over, and it continues in the cockpit with its full history.
-  Release hands it back to a terminal.
-- **Sessions.** Every earlier session of the folder can be watched or taken over.
+- **One rule.** Every agent lives in its own terminal window. The cockpit opens the window, shows the chat, and
+  writes by typing into the window. No agent runs inside the cockpit.
+- **Sessions.** Every earlier session of the folder can be added to the roster. Open terminal continues it in its own window.
 - **Terminal windows.** New agents start in a PowerShell window by default. Reopen any agent in one with Open terminal.
   The window runs the normal Claude Code, and the cockpit shows the same agent live.
 - **Chat.** Live streaming answers and images (attach, paste or drop). Commands, file reads and other tool calls are
@@ -38,8 +38,8 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Approvals and questions.** Allow once, always allow, or deny. Answer questions with one click.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.
 - **Context.** A meter per agent, a breakdown of what fills it, and a Compact button.
-- **Stop.** Only on request. Stop closes the PowerShell window of an agent the cockpit opened, or interrupts the turn
-  of an agent that runs inside the cockpit. The cockpit never closes a window you opened yourself.
+- **Stop.** Only on request. Close window closes the PowerShell window of an agent the cockpit opened. Interrupt
+  presses Esc in it. The cockpit never closes a window you opened yourself.
 
 ## Start
 
@@ -50,9 +50,7 @@ http://localhost:4600/. It runs in the background without a window of its own.
 
 **Closing a window stops nothing.** You can close the browser and the start window. Agents in PowerShell windows are
 independent of the cockpit and keep running even when the cockpit is shut down. To stop the cockpit itself, click
-**Shut down** in the page or run **`stop.cmd`**. Agents that run inside the cockpit pause while it is stopped. They
-stay cockpit agents and keep their chat; one that was in the middle of a turn offers **Continue** after the next
-start. To keep such an agent running without the cockpit, use **Open in terminal** on it.
+**Shut down** in the page or run **`stop.cmd`**.
 
 | Script | What it does |
 |---|---|
@@ -99,7 +97,11 @@ To use your installed Claude Code instead of the bundled one, set `COCKPIT_CLAUD
 - The cockpit talks to an agent in a terminal window by typing into that window. To avoid answering a question by
   accident, it does not type while the agent shows a question, or, unless the agent runs in allow-all mode, while it is
   busy or may be asking for a permission. It tells you why and lets you type anyway.
-- Take over runs an agent inside the cockpit without a window; Open in terminal gives it a window again.
+- Before typing, the cockpit reads the agent's window. If it shows a question or a menu (Enter to confirm, Esc to
+  cancel), it does not type and tells you so.
+- Emoji cannot be typed into a Windows console: they arrive as broken characters. The cockpit leaves them out of
+  typed messages. Accented letters work.
+- An agent saved by an older version as "inside the cockpit" becomes a terminal agent with the same session. Click Open terminal on it.
 - When you start a session again under the same name, or use `/clear`, the watched agent follows the newest session with that name.
 - Removing an agent or a project only removes it from the cockpit. Folders and session files are never deleted.
 
@@ -128,7 +130,7 @@ This page can make agents run commands on this PC. By default it only answers on
 To open it from a phone or another computer, set both `COCKPIT_HOST=0.0.0.0` and a `COCKPIT_TOKEN`,
 then open `http://<pc-address>:4600/?token=<your token>` once on that device. Never expose it to the open internet.
 
-Take over a session only after closing it in the terminal: a session should be driven from one place at a time.
+Use Open terminal on a session only after closing any other window that runs it: a session should be driven from one place at a time.
 
 ## Not in this version yet
 

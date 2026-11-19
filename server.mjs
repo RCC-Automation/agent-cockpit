@@ -32,6 +32,11 @@ const LOGIN_HINT = 'This PC is not logged in to Claude. Open a terminal, run "cl
 function agentEnv() {
   const env = { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'agent-cockpit/0.1.0' };
   if (!ALLOW_API_KEY) { delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; }
+  // If the cockpit itself was started from inside a Claude Code session, these markers would make every
+  // agent think it is a child of that session. A child session does not save its transcript, so the
+  // cockpit could not show its chat.
+  for (const k of ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_CHILD_NOTES_DIR',
+    'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_BRIDGE_SESSION_ID', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_ENTRYPOINT']) delete env[k];
   return env;
 }
 // Turn what the engine reports about its login into one plain label.
@@ -68,8 +73,10 @@ function loadRoster() {
       if (!projects.has(a.projectId)) continue;
       // A window opened before the PC last started cannot be open any more.
       if (a.term && (!a.term.openedAt || a.term.openedAt < bootedAt)) a.term.alive = false;
+      // One rule: every agent lives in a terminal window. An agent saved as "inside the cockpit" becomes
+      // a terminal agent with the same session, so nobody is stranded.
+      if ((a.mode || 'own') !== 'watch') { a.mode = 'watch'; if (!a.title) a.title = a.name; delete a.interrupted; if (a.sessionId) a.last = 'Open terminal to continue it in its own window.'; }
       agents.set(a.id, a);
-      if (a.interrupted && (a.mode || 'own') !== 'watch') { rt(a.id).status = 'need'; a.last = 'Interrupted when the cockpit stopped. Continue when you are ready.'; }
     }
   } catch { /* first run */ }
 }
@@ -611,7 +618,8 @@ function checkWindows() {
     if (err) return;
     const live = new Map();
     for (const line of String(stdout).split(/\r?\n/)) { const m = /^"([^"]+)","(\d+)"/.exec(line); if (m) live.set(Number(m[2]), m[1].toLowerCase()); }
-    for (const a of tracked) setWindowAlive(a, live.get(a.term.pid) === a.term.image);
+    // Only ever marks a window as gone. A list taken just before Close window must not bring it back.
+    for (const a of tracked) if (a.term && a.term.alive !== false && live.get(a.term.pid) !== a.term.image) setWindowAlive(a, false);
   });
 }
 // Closes a window the cockpit opened, together with the Claude Code running in it.
@@ -1022,21 +1030,49 @@ public static class CockpitKeys {
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool WriteConsoleInput(IntPtr h, INPUT_RECORD[] buf, uint len, out uint written);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [StructLayout(LayoutKind.Sequential)] struct COORD { public short X, Y; }
+  [StructLayout(LayoutKind.Sequential)] struct SMALL_RECT { public short L, T, R, B; }
+  [StructLayout(LayoutKind.Sequential)] struct SCREEN_INFO { public COORD size; public COORD cur; public ushort attr; public SMALL_RECT win; public COORD max; }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetConsoleScreenBufferInfo(IntPtr h, out SCREEN_INFO i);
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool ReadConsoleOutputCharacter(IntPtr h, System.Text.StringBuilder sb, uint len, COORD at, out uint read);
+  // True when the window shows a question with a preselected answer (trust this folder, a permission,
+  // the bypass warning). Enter would pick that answer, so nothing is typed.
+  static bool ShowsQuestion() {
+    IntPtr o = CreateFile("CONOUT$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    if (o == new IntPtr(-1)) return false;
+    SCREEN_INFO i; bool q = false;
+    if (GetConsoleScreenBufferInfo(o, out i)) for (short y = i.win.T; y <= i.win.B && !q; y++) {
+      var sb = new System.Text.StringBuilder(i.size.X + 1); uint n; COORD c; c.X = 0; c.Y = y;
+      if (!ReadConsoleOutputCharacter(o, sb, (uint)i.size.X, c, out n)) continue;
+      string line = sb.ToString(0, (int)Math.Min(n, (uint)sb.Length));
+      q = line.Contains("Enter to confirm") || line.Contains("Esc to cancel");
+    }
+    CloseHandle(o); return q;
+  }
   [StructLayout(LayoutKind.Explicit, CharSet=CharSet.Unicode)] struct KEY_EVENT_RECORD {
     [FieldOffset(0)] public int bKeyDown; [FieldOffset(4)] public ushort wRepeatCount; [FieldOffset(6)] public ushort wVirtualKeyCode;
     [FieldOffset(8)] public ushort wVirtualScanCode; [FieldOffset(10)] public char UnicodeChar; [FieldOffset(12)] public uint dwControlKeyState; }
   [StructLayout(LayoutKind.Explicit, CharSet=CharSet.Unicode)] struct INPUT_RECORD { [FieldOffset(0)] public ushort EventType; [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent; }
   static bool Keys(IntPtr h, string text) {
-    var recs = new INPUT_RECORD[text.Length * 2];
+    var recs = new System.Collections.Generic.List<INPUT_RECORD>();
     for (int i = 0; i < text.Length; i++) for (int d = 0; d < 2; d++) {
+      char c = text[i];
       var r = new INPUT_RECORD(); r.EventType = 1; r.KeyEvent.bKeyDown = d == 0 ? 1 : 0; r.KeyEvent.wRepeatCount = 1;
-      r.KeyEvent.wVirtualKeyCode = text[i] == '\\r' ? (ushort)13 : text[i] == (char)27 ? (ushort)27 : (ushort)0; r.KeyEvent.UnicodeChar = text[i]; recs[i * 2 + d] = r; }
-    uint n; return WriteConsoleInput(h, recs, (uint)recs.Length, out n);
+      r.KeyEvent.wVirtualKeyCode = c == '\\r' ? (ushort)13 : c == (char)27 ? (ushort)27 : (ushort)0; r.KeyEvent.UnicodeChar = c; recs.Add(r); }
+    // In pieces, so a long message does not overrun the console's input buffer.
+    bool ok = true; uint n;
+    for (int at = 0; ok && at < recs.Count; at += 256) {
+      var part = recs.GetRange(at, Math.Min(256, recs.Count - at)).ToArray();
+      ok = WriteConsoleInput(h, part, (uint)part.Length, out n);
+      if (recs.Count > 256) Thread.Sleep(15);
+    }
+    return ok;
   }
   // Types the text into the console of the given process and, if asked, waits a moment and presses Enter.
-  public static string Send(uint pid, string text, bool enter) {
+  public static string Send(uint pid, string text, bool enter, bool check) {
     FreeConsole();
     if (!AttachConsole(pid)) return "could not reach its window (" + Marshal.GetLastWin32Error() + ")";
+    if (check && ShowsQuestion()) { FreeConsole(); return "QUESTION"; }
     IntPtr h = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
     if (h == new IntPtr(-1)) { FreeConsole(); return "could not open its input (" + Marshal.GetLastWin32Error() + ")"; }
     bool ok = Keys(h, text); if (enter) { Thread.Sleep(600); ok = ok && Keys(h, "\\r"); }
@@ -1045,11 +1081,11 @@ public static class CockpitKeys {
   }
 }`;
 
-function typeIntoWindows(targets, line, enter) {
+function typeIntoWindows(targets, line, enter, check) {
   // targets: [{ id, pid, started }]; resolves to a Map of id -> 'sent' or the reason it failed
   const script = `$ErrorActionPreference = 'Stop'\nAdd-Type -TypeDefinition @'\n${TYPE_HELPER}\n'@\n$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(line, 'utf8').toString('base64')}'))\n` +
     targets.map(t => `$p = Get-Process -Id ${Number(t.pid)} -ErrorAction SilentlyContinue; $s = 0; if ($p) { try { $s = $p.StartTime.ToFileTimeUtc() } catch {} }\n` +
-      `if (-not $p) { Write-Output '${t.id}|its window is closed' } elseif ("$s" -ne '${String(t.started).replace(/\D/g, '')}') { Write-Output '${t.id}|its window is closed' } else { Write-Output ('${t.id}|' + [CockpitKeys]::Send(${Number(t.pid)}, $text, $${enter ? 'true' : 'false'})) }`).join('\n');
+      `if (-not $p) { Write-Output '${t.id}|its window is closed' } elseif ("$s" -ne '${String(t.started).replace(/\D/g, '')}') { Write-Output '${t.id}|its window is closed' } else { Write-Output ('${t.id}|' + [CockpitKeys]::Send(${Number(t.pid)}, $text, $${enter ? 'true' : 'false'}, $${check ? 'true' : 'false'})) }`).join('\n');
   return new Promise(resolve => {
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64ps(script)], { windowsHide: true, timeout: 60000 + targets.length * 3000 }, (err, stdout, stderr) => {
       const out = new Map();
@@ -1078,7 +1114,8 @@ function typeBlock(a, force) {
   return null;
 }
 // Types one line into the windows of the given agents. Resolves to a Map of agent id -> 'sent' or the reason.
-async function typeToAgents(list, text, enter = true) {
+const QUESTION = 'QUESTION', QUESTION_WHY = 'its window is showing a question, and Enter would pick the preselected answer. Answer it in the window first';
+async function typeToAgents(list, text, enter = true, check = false) {
   const line = enter ? text.replace(/\s+/g, ' ').trim() : text;
   const out = new Map();
   const tm = list.filter(a => a.term.tmux), win = list.filter(a => !a.term.tmux);
@@ -1092,7 +1129,10 @@ async function typeToAgents(list, text, enter = true) {
       });
     }));
   }
-  if (win.length) for (const [id, res] of await typeIntoWindows(win.map(a => ({ id: a.id, pid: a.term.pid, started: a.term.started })), line, enter)) out.set(id, res);
+  // Tested on Windows 11: the console turns an emoji typed as keys into broken characters, whatever the
+  // order of the key events. Accented letters are fine. So emoji are left out of typed text.
+  const keys = line.replace(/[\u{10000}-\u{10FFFF}]️?/gu, '').replace(/ {2,}/g, ' ');
+  if (win.length) for (const [id, res] of await typeIntoWindows(win.map(a => ({ id: a.id, pid: a.term.pid, started: a.term.started })), keys, enter, check)) out.set(id, res);
   return out;
 }
 function nudgeWatch(a) { rt(a.id).viewedAt = Date.now(); for (const ms of [900, 2200, 4500]) setTimeout(() => pollWatched(a).catch(() => {}), ms); }
@@ -1107,8 +1147,8 @@ async function broadcastTo(p, ids, text) {
     typing.push(a);
   }
   if (typing.length) {
-    const res = await typeToAgents(typing, text);
-    for (const a of typing) { const out = res.get(a.id); if (out === 'sent') { sent.push(a.name); nudgeWatch(a); } else skipped.push({ name: a.name, why: out }); }
+    const res = await typeToAgents(typing, text, true, true);
+    for (const a of typing) { const out = res.get(a.id); if (out === 'sent') { sent.push(a.name); nudgeWatch(a); } else skipped.push({ name: a.name, why: out === QUESTION ? QUESTION_WHY : out }); }
   }
   return { sent, skipped };
 }
@@ -1203,29 +1243,22 @@ const routes = {
       id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(b.name, proj.id), cwd, model: String(b.model || '').trim(),
       permissionMode: PERMISSION_MODES.includes(b.permissionMode) ? b.permissionMode : (proj.permissionMode || 'default'),
       sessionId: b.sessionId || null, createdAt: Date.now(), updatedAt: Date.now(), cost: 0,
-      mode: b.sessionId && b.mode === 'watch' ? 'watch' : 'own', title: String(b.title || '').trim(),
-      last: b.sessionId ? 'Taken over. Send a message to continue.' : 'Ready. Waiting for a task.',
+      mode: 'watch', title: String(b.title || '').trim(),
+      last: b.sessionId ? 'Open terminal to continue it in its own window.' : 'Starting in a terminal window.',
     };
     if (a.title && proj.ignored) proj.ignored = proj.ignored.filter(t => t.toLowerCase() !== a.title.toLowerCase());
     agents.set(a.id, a); saveRoster();
     const r = rt(a.id);
-    if (a.mode === 'watch') { a.last = ''; emitAgent(a); return json(res, 200, { agent: publicAgent(a) }); }
-    if (b.where === 'terminal' && !b.sessionId) {
-      // The terminal creates the session. The roster shows a placeholder that attaches to it by name.
-      const first = String(b.firstMessage || '').trim();
-      a.mode = 'watch'; a.title = a.name; a.last = 'Starting in a terminal window.';
-      emitAgent(a);
-      try { await openTerminal(a, first.length <= 1500 ? first : ''); }
-      catch (e) { agents.delete(a.id); runtimes.delete(a.id); saveRoster(); broadcast({ t: 'remove', agentId: a.id }); return json(res, 500, { error: e.message }); }
-      saveRoster();
-      for (const ms of [4000, 9000]) setTimeout(scanProjects, ms);
-      return json(res, 200, { agent: publicAgent(a), hint: first.length > 1500 ? 'The first message was too long to pass along. Paste it in the terminal.' : '' });
-    }
-    if (b.sessionId) await ensureHistory(a); else r.historyLoaded = true;
-    note(a, b.sessionId ? `Taken over from session ${b.sessionId.slice(0, 8)} in ${shortPath(cwd)}` : `Launched in ${shortPath(cwd)}`);
+    if (b.sessionId) { a.last = ''; emitAgent(a); return json(res, 200, { agent: publicAgent(a) }); } // resumed: shown live, Open terminal gives it a window
+    // A new agent: the terminal creates the session. The roster shows a placeholder that attaches to it by name.
+    const first = String(b.firstMessage || '').trim();
+    a.title = a.name;
     emitAgent(a);
-    if (b.firstMessage && String(b.firstMessage).trim()) sendMessage(a, String(b.firstMessage).trim());
-    json(res, 200, { agent: publicAgent(a) });
+    try { await openTerminal(a, first.length <= 1500 ? first : ''); }
+    catch (e) { agents.delete(a.id); runtimes.delete(a.id); saveRoster(); broadcast({ t: 'remove', agentId: a.id }); return json(res, 500, { error: e.message }); }
+    saveRoster();
+    for (const ms of [4000, 9000]) setTimeout(scanProjects, ms);
+    json(res, 200, { agent: publicAgent(a), hint: first.length > 1500 ? 'The first message was too long to pass along. Paste it in the terminal.' : '' });
   },
 };
 
@@ -1251,7 +1284,8 @@ const agentRoutes = {
         const paths = images.map((im, n) => { const f = path.join(dir, `${Date.now()}-${n}.${im.mediaType.split('/')[1].replace('jpeg', 'jpg')}`); fs.writeFileSync(f, Buffer.from(im.data, 'base64')); return f; });
         line = (line ? line + ' ' : '') + paths.map(f => `[Look at this image: ${f}]`).join(' ');
       }
-      const out = (await typeToAgents([a], line)).get(a.id);
+      const out = (await typeToAgents([a], line, true, b.force !== true)).get(a.id);
+      if (out === QUESTION) return json(res, 409, { error: `${a.name}: ${QUESTION_WHY}.`, canForce: true });
       if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
       nudgeWatch(a);
       return json(res, 200, { ok: true, typed: true });
@@ -1315,26 +1349,8 @@ const agentRoutes = {
   },
   // The browser says it is looking at this agent, so its chat is kept up to date.
   'POST view': async (a, req, res) => { rt(a.id).viewedAt = Date.now(); json(res, 200, { ok: true }); },
-  // The cockpit becomes the place this agent runs. The terminal must be closed first.
-  'POST takeover': async (a, req, res) => {
-    const r = rt(a.id);
-    if (a.mode === 'watch') {
-      if (await closeWindow(a)) await new Promise(done => setTimeout(done, 900)); // its window is closed first
-      await loadWatched(a, true);
-      a.mode = 'own'; r.status = 'idle'; r.historyLoaded = true;
-      note(a, 'Taken over by the cockpit. Write here from now on, not in the terminal.');
-      touch(a, 'Taken over. Send a message to continue.');
-    }
-    json(res, 200, { agent: publicAgent(a) });
-  },
-  // Hands the agent back to a terminal. The cockpit stops its process and only watches again.
-  'POST release': async (a, req, res) => {
-    if (a.sessionId) await releaseAgent(a, 'Released to the terminal.');
-    json(res, 200, { agent: publicAgent(a), command: `claude --resume ${a.sessionId}` });
-  },
   // Opens a terminal window running this agent. The terminal owns the session from then on.
   'POST terminal': async (a, req, res) => {
-    await releaseAgent(a, 'Opening in a terminal window.');
     try { await openTerminal(a); } catch (e) { return json(res, 500, { error: e.message }); }
     touch(a, a.sessionId ? 'Opened in a terminal window.' : 'Starting in a terminal window.');
     json(res, 200, { agent: publicAgent(a) });
