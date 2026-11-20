@@ -534,6 +534,7 @@ function renderHead() {
     subsButton(a),
     model, otherModel,
     claude ? mode : null,
+    watch && a.window === 'open' ? h('button', { class: 'btn sm', type: 'button', text: 'Show terminal', title: 'Bring its terminal window to the front', onclick: () => api('POST', `/api/agents/${a.id}/focus`).catch(x => toast(x.message)) }) : null,
     watch && a.talk && a.status === 'work' ? h('button', { class: 'btn sm', type: 'button', text: 'Interrupt', title: 'Press Esc in its terminal window: it stops what it is doing and waits for you', onclick: () => api('POST', `/api/agents/${a.id}/interrupt`).catch(x => toast(x.message)) }) : null,
     watch && a.window === 'open' && !a.adopted ? h('button', { class: 'btn sm danger', type: 'button', text: 'Close window', title: 'Close its terminal window and stop the agent', onclick: () => stopTerm(a) }) : null,
     h('button', { class: 'btn sm', type: 'button', text: S.detail ? 'Group steps' : 'Show all steps', title: 'Fold commands, file reads and other tool calls into one line, or show each of them', onclick: () => { S.detail = !S.detail; store.set('cockpit.detail', S.detail ? '1' : ''); renderMain(); } }),

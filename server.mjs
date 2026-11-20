@@ -1101,6 +1101,40 @@ public static class CockpitKeys {
     FreeConsole();
     return Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(all.ToString()));
   }
+  [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr w, uint flags);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr w);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr w, int cmd);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr w);
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr w);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr w, IntPtr pid);
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+  [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  // Brings the agent's window to the front. Nothing is typed into it. In Windows Terminal the console's own
+  // window is hidden and owned by the terminal's window, so the owner is the one brought forward.
+  public static string Focus(uint pid) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return "could not reach its window (" + Marshal.GetLastWin32Error() + ")";
+    IntPtr w = GetConsoleWindow();
+    FreeConsole();
+    if (w == IntPtr.Zero) return "it has no window to show";
+    IntPtr top = GetAncestor(w, 3);
+    if (top != IntPtr.Zero) w = top;
+    if (IsIconic(w)) ShowWindow(w, 9);
+    // Windows lets only the program in front give the front away. Joining its input queue for a moment is
+    // the usual way; a tap of Alt is the fallback when that is not enough.
+    uint fg = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero), me = GetCurrentThreadId();
+    bool joined = fg != 0 && fg != me && AttachThreadInput(me, fg, true);
+    SetForegroundWindow(w); BringWindowToTop(w);
+    if (joined) AttachThreadInput(me, fg, false);
+    if (GetForegroundWindow() != w) {
+      keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);
+      SetForegroundWindow(w);
+    }
+    return GetForegroundWindow() == w ? "shown" : "Windows did not let it come to the front";
+  }
 }`;
 
 // One typing helper keeps running in the background. Starting PowerShell and compiling the helper took
@@ -1119,6 +1153,7 @@ while ($null -ne ($l = [Console]::In.ReadLine())) {
     if ($p) { try { $s = $p.StartTime.ToFileTimeUtc() } catch {} }
     if (-not $p -or "$s" -ne $f[2]) { $r = 'its window is closed' }
     elseif ($f[3] -eq 'S') { $r = 'SCREEN:' + [CockpitKeys]::Screen($tp) }
+    elseif ($f[3] -eq 'F') { $r = [CockpitKeys]::Focus($tp) }
     else { $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($f[5])); $r = [CockpitKeys]::Send($tp, $text, $f[3] -eq '1', $f[4] -eq '1') }
   } catch { $r = 'typing into the window failed: ' + $_.Exception.Message }
   [Console]::Out.WriteLine($f[0] + '|' + $r); [Console]::Out.Flush()
@@ -1163,7 +1198,7 @@ function typeOne(t, line, enter, check) {
     return new Promise(done => {
       const timer = setTimeout(() => { if (typer.waiting.delete(id)) { done('typing into the window failed: no answer from the helper'); if (typer.proc) typer.proc.kill(); } }, 20000 + line.length * 5);
       typer.waiting.set(id, r => { clearTimeout(timer); done(r); });
-      typer.proc.stdin.write(`${id}|${Number(t.pid)}|${String(t.started).replace(/\D/g, '')}|${enter === 'S' ? 'S' : enter ? 1 : 0}|${check ? 1 : 0}|${Buffer.from(line, 'utf8').toString('base64')}\n`);
+      typer.proc.stdin.write(`${id}|${Number(t.pid)}|${String(t.started).replace(/\D/g, '')}|${enter === 'S' || enter === 'F' ? enter : enter ? 1 : 0}|${check ? 1 : 0}|${Buffer.from(line, 'utf8').toString('base64')}\n`);
     });
   };
   const p = typer.chain.then(run, run);
@@ -1498,6 +1533,14 @@ const agentRoutes = {
   'GET screen': async (a, req, res) => {
     const s = await windowScreen(a);
     json(res, 200, { screen: s, question: s ? questionOf(s) : null });
+  },
+  // Brings the agent's terminal window to the front. Nothing is typed, so this also works for a window you
+  // opened yourself, and while the agent is busy or asking a question.
+  'POST focus': async (a, req, res) => {
+    if (process.platform !== 'win32' || !termKnown(a) || a.term.alive === false || a.term.tmux) return json(res, 409, { error: `${a.name}: the cockpit cannot show this window. Find it in the taskbar.` });
+    const out = await typeOne({ pid: a.term.pid, started: a.term.started }, '', 'F', false);
+    if (out !== 'shown') return json(res, 502, { error: `${a.name}: ${out}.` });
+    json(res, 200, { ok: true });
   },
   // Esc in the agent's window: Claude Code stops what it is doing and waits for you.
   'POST interrupt': async (a, req, res) => {
