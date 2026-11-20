@@ -833,12 +833,16 @@ function checkWindows() {
     for (const a of tracked) { let alive = true; try { process.kill(a.term.pid, 0); } catch { alive = false; } setWindowAlive(a, alive); }
     return;
   }
+  // The windows as they are when the list is asked for. tasklist can take seconds on a busy PC: a window
+  // opened meanwhile (Open terminal, a reopen) is not in that list and must not be judged by it, or it is
+  // marked closed while it runs and the cockpit later opens a second one for the same session.
+  const asked = new Map(tracked.map(a => [a.id, a.term]));
   execFile('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 15000 }, (err, stdout) => {
     if (err) return;
     const live = new Map();
     for (const line of String(stdout).split(/\r?\n/)) { const m = /^"([^"]+)","(\d+)"/.exec(line); if (m) live.set(Number(m[2]), m[1].toLowerCase()); }
     // Only ever marks a window as gone. A list taken just before Close window must not bring it back.
-    for (const a of tracked) if (a.term && a.term.alive !== false && live.get(a.term.pid) !== a.term.image) setWindowAlive(a, false);
+    for (const a of tracked) if (a.term && a.term === asked.get(a.id) && a.term.alive !== false && live.get(a.term.pid) !== a.term.image) setWindowAlive(a, false);
   });
 }
 // Closes a window the cockpit opened, together with the Claude Code running in it.
