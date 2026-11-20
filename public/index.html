@@ -108,6 +108,15 @@ a{color:var(--accent)}
 .look .size{display:flex;align-items:center;gap:8px}
 .look .size span{flex:1;text-align:center;font-family:var(--mono);font-size:.8rem;color:var(--ink)}
 .preview{position:absolute;top:0;right:0;bottom:0;width:min(58%,900px);background:var(--surface);border-left:1px solid var(--line);box-shadow:-8px 0 24px rgb(0 0 0 / .16);display:flex;flex-direction:column;z-index:6}
+.pv-tabs{display:flex;gap:2px;padding:6px 8px 0;border-bottom:1px solid var(--line);overflow-x:auto;background:var(--surface-2);flex:none}
+.pv-tabi{display:inline-flex;align-items:center;max-width:220px;border:1px solid var(--line);border-bottom:0;border-radius:8px 8px 0 0;background:var(--surface-2);color:var(--ink-2)}
+.pv-tabi.on{background:var(--surface);color:var(--ink);font-weight:600}
+.pv-tabi button{border:0;background:none;color:inherit;font:inherit;font-size:.76rem;cursor:pointer;padding:5px 4px 5px 10px}
+.pv-tabi .pv-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:180px}
+.pv-tabi .pv-x{padding:5px 8px 5px 4px;color:var(--ink-3);font-size:.9rem;line-height:1}
+.pv-tabi .pv-x:hover{color:var(--fail)}
+.pv-reopen{position:absolute;right:0;top:45%;z-index:6;writing-mode:vertical-rl;border:1px solid var(--line);border-right:0;border-radius:8px 0 0 8px;background:var(--surface);color:var(--ink-2);font-size:.78rem;font-weight:600;padding:12px 6px;cursor:pointer;box-shadow:-4px 0 12px rgb(0 0 0 / .12)}
+.pv-reopen:hover{color:var(--accent)}
 .pv-head{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:.8rem}
 .pv-head b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
 .pv-head a{white-space:nowrap}
@@ -449,7 +458,7 @@ function renderRail() {
 // ───────── chat ─────────
 let els = {}; // live DOM references for the open chat
 function openAgent(id) {
-  S.cur = id; S.view = 'chat'; S.attach = []; S.ctxOpen = false; S.preview = null;
+  S.cur = id; S.view = 'chat'; S.attach = []; S.ctxOpen = false; // open files stay with their agent (filesOf)
   store.set('cockpit.agent.' + S.project, id);
   renderRail(); renderMain();
 }
@@ -711,10 +720,53 @@ function fileCard(f, label, title, noteText) {
     h('div', null, h('span', { class: 'k', text: label + ' · ' + f.kind }), h('span', { class: 'tt', text: title }), noteText ? h('span', { class: 'nt', text: noteText }) : null,
       f.link ? h('a', { href: f.link, target: '_blank', rel: 'noopener noreferrer', text: 'Open on claude.ai', onclick: e => e.stopPropagation() }) : null));
 }
-function openPreview(f) { S.preview = f; paintPreview(); }
+// The file panel, like the Claude app's: every file opened from a chat stays as a tab until its × closes it.
+// Collapsing hides the panel and leaves a small tab at the edge that opens it again. Kept per agent, also
+// across a page reload (browser storage; the page works without it).
+function filesOf(agentId) {
+  if (!S.files) S.files = new Map();
+  if (!S.files.has(agentId)) {
+    let saved = null; try { saved = JSON.parse(localStorage.getItem('cockpit.files.' + agentId) || 'null'); } catch { /* none */ }
+    S.files.set(agentId, saved && Array.isArray(saved.list) ? saved : { list: [], active: null, collapsed: false });
+  }
+  return S.files.get(agentId);
+}
+function saveFiles(agentId) { try { localStorage.setItem('cockpit.files.' + agentId, JSON.stringify(filesOf(agentId))); } catch { /* not kept */ } }
+function openPreview(f) {
+  const a = curAgent(); if (!a) return;
+  const st = filesOf(a.id);
+  const i = st.list.findIndex(x => x.url === f.url);
+  if (i >= 0) st.list[i] = { ...st.list[i], ...f }; else st.list.push(f);
+  st.active = f.url; st.collapsed = false;
+  saveFiles(a.id); paintPreview();
+}
+function closeFile(url) {
+  const a = curAgent(); if (!a) return;
+  const st = filesOf(a.id), i = st.list.findIndex(x => x.url === url);
+  if (i < 0) return;
+  st.list.splice(i, 1);
+  if (st.active === url) st.active = st.list.length ? st.list[Math.min(i, st.list.length - 1)].url : null;
+  saveFiles(a.id); paintPreview();
+}
+function setCollapsed(on) { const a = curAgent(); if (!a) return; filesOf(a.id).collapsed = on; saveFiles(a.id); paintPreview(); }
 function paintPreview() {
   const pv = els.preview; if (!pv) return;
-  const f = S.preview; pv.hidden = !f; pv.textContent = ''; if (!f) return;
+  const a = curAgent(); const st = a ? filesOf(a.id) : { list: [] };
+  pv.textContent = ''; pv.classList.remove('collapsed');
+  if (els.pvTab) { els.pvTab.remove(); els.pvTab = null; }
+  if (!st.list.length) { pv.hidden = true; return; }
+  if (st.collapsed) {
+    pv.hidden = true;
+    els.pvTab = h('button', { class: 'pv-reopen', type: 'button', title: 'Show the open files again', onclick: () => setCollapsed(false) }, '‹ Files · ' + st.list.length);
+    pv.after(els.pvTab);
+    return;
+  }
+  pv.hidden = false;
+  const f = st.list.find(x => x.url === st.active) || st.list[st.list.length - 1];
+  st.active = f.url;
+  const tabs = h('div', { class: 'pv-tabs', role: 'tablist' }, st.list.map(x => h('span', { class: 'pv-tabi' + (x.url === f.url ? ' on' : ''), role: 'tab', 'aria-selected': String(x.url === f.url) },
+    h('button', { class: 'pv-name', type: 'button', text: x.name, title: x.name, onclick: () => { st.active = x.url; saveFiles(a.id); paintPreview(); } }),
+    h('button', { class: 'pv-x', type: 'button', text: '×', title: 'Close ' + x.name, 'aria-label': 'Close ' + x.name, onclick: () => closeFile(x.url) }))));
   let body;
   if (f.kind === 'image') body = h('img', { src: f.url, alt: f.name });
   else if (f.kind === 'video') body = h('video', { src: f.url, controls: '' });
@@ -725,10 +777,10 @@ function paintPreview() {
       .then(t => { if (/\.md$/i.test(f.name)) body.innerHTML = md(t); else body.replaceChildren(h('pre', { text: t })); })
       .catch(x => { body.textContent = x.message; });
   } else body = h('iframe', { src: f.url, title: f.name, ...(f.kind === 'html' ? { sandbox: 'allow-scripts allow-popups allow-forms allow-modals' } : {}) });
-  pv.append(h('div', { class: 'pv-head' }, h('b', { text: f.name }),
+  pv.append(tabs, h('div', { class: 'pv-head' }, h('b', { text: f.name }),
       f.link ? h('a', { href: f.link, target: '_blank', rel: 'noopener noreferrer', text: 'Open on claude.ai' }) : null,
       h('a', { href: f.url, target: '_blank', rel: 'noopener', text: 'Open in a new tab' }),
-      h('button', { class: 'btn sm', type: 'button', text: 'Close', onclick: () => { S.preview = null; paintPreview(); } })),
+      h('button', { class: 'btn sm', type: 'button', text: 'Collapse ›', title: 'Hide the files; they stay open, and the tab at the right edge shows them again', onclick: () => setCollapsed(true) })),
     h('div', { class: 'pv-body' }, body));
 }
 
