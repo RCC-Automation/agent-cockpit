@@ -7,8 +7,11 @@ import path from 'node:path';
 
 // Where the hub is and the app token the owner made for the cockpit (POST /v1/admin/apps on the hub).
 // The token comes from COCKPIT_HUB_TOKEN or <data>/hub-token.txt; it is never logged or sent to the page.
+// The address comes from COCKPIT_HUB_URL or the file <data>/hub-url.txt; deleting that file turns the hub off.
 export function hubConfig(dataDir) {
-  const url = (process.env.COCKPIT_HUB_URL || '').trim().replace(/\/+$/, '');
+  let raw = process.env.COCKPIT_HUB_URL || '';
+  if (!raw.trim()) { try { raw = fs.readFileSync(path.join(dataDir, 'hub-url.txt'), 'utf8'); } catch { /* none: hub off */ } }
+  const url = raw.trim().replace(/\/+$/, '');
   if (!url) return null;
   let token = (process.env.COCKPIT_HUB_TOKEN || '').trim();
   if (!token) { try { token = fs.readFileSync(path.join(dataDir, 'hub-token.txt'), 'utf8').trim(); } catch { /* none */ } }

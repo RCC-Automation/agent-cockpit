@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startCockpit, startFakeHub, until, tempDir, writeSession } from './helpers.mjs';
-import { deliveryText, outcomeFor } from '../hub-client.mjs';
+import { deliveryText, outcomeFor, hubConfig } from '../hub-client.mjs';
 
 const hubState = async c => (await c.call('GET', '/api/state')).json.hub;
 const agentNamed = async (c, n) => (await c.call('GET', '/api/state')).json.agents.find(a => a.name === n);
@@ -39,6 +39,17 @@ describe('without a hub', () => {
 });
 
 // What is typed into a window, and what is reported back: no cockpit needed.
+test('the hub address can come from data/hub-url.txt, so no PC setting is needed', () => {
+  const saved = process.env.COCKPIT_HUB_URL; delete process.env.COCKPIT_HUB_URL;
+  try {
+    const dir = tempDir('hubconf');
+    assert.equal(hubConfig(dir), null, 'no file, no setting: hub off');
+    fs.writeFileSync(path.join(dir, 'hub-url.txt'), ' http://127.0.0.1:8790/ \n');
+    fs.writeFileSync(path.join(dir, 'hub-token.txt'), 'app_x');
+    assert.deepEqual(hubConfig(dir), { url: 'http://127.0.0.1:8790', token: 'app_x' });
+  } finally { if (saved !== undefined) process.env.COCKPIT_HUB_URL = saved; }
+});
+
 test("deliveryText types a person's words as they are", () => {
   assert.equal(deliveryText({ senderHarness: 'human', content: 'Run it' }), 'Run it');
 });
