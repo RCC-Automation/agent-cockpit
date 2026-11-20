@@ -593,6 +593,8 @@ function profileButton(a) {
     const sel = h('select', { 'aria-label': 'Hermes profile' }, (await loadProfiles()).map(p => h('option', { value: p.name, text: profileLabel(p), selected: p.name === (a.profile || '') })));
     const apply = async () => {
       const v = sel.value; if (v === (a.profile || '')) { box.remove(); return; }
+      const pick = (await loadProfiles()).find(p => p.name === v);
+      if (pick && pick.missing && !confirm(`The profile ${v || 'default'} uses the model ${pick.model}, which Ollama does not have. ${a.name} will not be able to answer there.\n\nSwitch anyway?`)) return;
       const open = a.window === 'open' && !a.adopted;
       const reopen = open && confirm(`Switch ${a.name} to the Hermes profile ${v || 'default'}?
 
@@ -610,6 +612,15 @@ OK closes ${a.name}'s window and reopens it in the new profile now. Cancel keeps
     const box = h('span', { class: 'model-pick' }, sel, go);
     b.after(box); sel.focus();
   } });
+  // A profile whose model Ollama does not have cannot answer: every message comes back "not processed".
+  // The button turns red and says so, instead of the agent failing quietly.
+  loadProfiles().then(list => {
+    const p = list.find(x => x.name === (a.profile || ''));
+    if (!p || !p.missing) return;
+    b.classList.add('danger');
+    b.textContent = `Profile: ${p.name || 'default'} · model missing`;
+    b.title = `The profile ${p.name || 'default'} uses the model ${p.model}, which Ollama does not have, so ${a.name} cannot answer. Click to switch to another profile, or run: ollama pull ${p.model}`;
+  });
   return b;
 }
 function nearBottom() { const t = els.thread; return !t || t.scrollHeight - t.scrollTop - t.clientHeight < 140; }

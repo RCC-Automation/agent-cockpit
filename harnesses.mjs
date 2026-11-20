@@ -261,6 +261,8 @@ async function ollamaModels(baseUrl) {
 }
 // Which profile holds a session: remembered once found.
 const hermesWhere = new Map();
+// Agent id -> the model its window must start with, because its chat's own model is gone (see prepare).
+const modelFix = new Map();
 async function hermesFind(id) {
   if (hermesWhere.has(id)) return hermesWhere.get(id);
   for (const h of hermesHomes()) {
@@ -341,6 +343,21 @@ const hermes = {
   },
   // Hermes switches model with "/model <name>" typed in its window (for this session only).
   liveSwitch: true,
+  // A resumed Hermes chat goes back to the model it used last, not the one its profile names now. When that
+  // old model is gone from Ollama (renamed, deleted) the chat could never answer again: every message comes
+  // back "not processed". Then the window is started with -m and the profile's model, which Ollama has.
+  async prepare(a) {
+    modelFix.delete(a.id);
+    if (a.model || !a.sessionId) return;
+    const file = await hermesFind(a.sessionId); if (!file) return;
+    const d = await db(file);
+    let stored = ''; try { stored = (d.prepare('SELECT model FROM sessions WHERE id = ?').get(a.sessionId) || {}).model || ''; } finally { d.close(); }
+    const { model, baseUrl } = profileModel(a.profile && PROFILE_NAME.test(a.profile) ? a.profile : '');
+    if (!stored || !model || stored === model) return;
+    const have = await ollamaModels(baseUrl); if (!have) return;
+    const has = m => have.has(m) || have.has(m + ':latest');
+    if (!has(stored) && has(model)) modelFix.set(a.id, model);
+  },
   // A new Hermes session is created under the agent's name, so the cockpit can find it again by that name.
   // `-p <profile>` comes before the subcommand, as Hermes reads it first.
   args(a, first) {
@@ -348,6 +365,7 @@ const hermes = {
     if (a.sessionId) args.push('--resume', a.sessionId);
     else args.push('--continue', a.title || a.name, '--create-if-missing');
     if (a.model) args.push('-m', a.model);
+    else if (modelFix.has(a.id)) args.push('-m', modelFix.get(a.id));
     if (first) args.push('-q', first.replace(/\s+/g, ' ').trim());
     return args;
   },

@@ -776,7 +776,13 @@ function shellLine(a, firstMessage) {
 
 // Opens the window and remembers which process it is, so the cockpit can tell whether it is
 // still open and can close it when asked. Windows that the person opened themselves are never touched.
-function openTerminal(a, firstMessage) {
+// A tool may look something up before its command line is built (Hermes: which models Ollama has).
+async function openTerminal(a, firstMessage) {
+  const tool = otherTool(a);
+  if (tool && tool.prepare) { try { await tool.prepare(a); } catch { /* the command line is built without it */ } }
+  return openTerminalNow(a, firstMessage);
+}
+function openTerminalNow(a, firstMessage) {
   const env = agentEnv();
   const fail = (reject, what) => reject(new Error('Could not open a terminal window: ' + String(what || 'no answer').split('\n')[0]));
   const shell = process.env.COCKPIT_SHELL || 'powershell.exe';
