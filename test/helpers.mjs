@@ -42,8 +42,11 @@ export function writeSession(config, cwd, { id, title, turns }) {
 
 export async function startCockpit(extraEnv = {}) {
   const port = nextPort++, data = tempDir('data'), config = tempDir('config');
-  const env = { ...process.env, COCKPIT_PORT: String(port), COCKPIT_DATA: data, CLAUDE_CONFIG_DIR: config, COCKPIT_HOST: '127.0.0.1', COCKPIT_TEST: '1', ...extraEnv };
-  delete env.COCKPIT_TOKEN;
+  // A test cockpit never takes the real hub settings from the environment: with the owner's app token it would
+  // take over the real cockpit's hub connection. Only a test that passes them gets a hub.
+  const base0 = { ...process.env };
+  for (const k of ['COCKPIT_TOKEN', 'COCKPIT_HUB_URL', 'COCKPIT_HUB_TOKEN']) delete base0[k];
+  const env = { ...base0, COCKPIT_PORT: String(port), COCKPIT_DATA: data, CLAUDE_CONFIG_DIR: config, COCKPIT_HOST: '127.0.0.1', COCKPIT_TEST: '1', ...extraEnv };
   let child, listening;
   // The cockpit prints "is running" once it listens. Waiting for that line is instant; asking a port that does
   // not listen yet costs about 2 s per try on Windows (it retries the connection before giving up).

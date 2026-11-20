@@ -1701,7 +1701,11 @@ async function carryDelivery(f) {
   if (handledDeliveries.size > 500) handledDeliveries.delete(handledDeliveries.values().next().value);
   const a = agentOfHub(f.agentId);
   let report;
+  // The same guard as a broadcast: on tmux, and while the agent asks a question, nothing is typed. The hub
+  // holds the delivery and tries again.
+  const block = a && canTalk(a) ? typeBlock(a, false) : null;
   if (!a || !canTalk(a)) report = { outcome: 'refused', reason: 'no_window' };
+  else if (block) report = { outcome: 'held', reason: 'question', question: { text: `${a.name}: ${block.why}.`, options: [] } };
   else {
     const result = (await typeToAgents([a], deliveryText(f), true, true)).get(a.id);
     let question = null;
