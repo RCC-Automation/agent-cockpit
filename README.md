@@ -125,6 +125,17 @@ Set these before starting, as environment variables.
 | `COCKPIT_IMPORT_DAYS` | `7` | Named sessions used within this many days are shown automatically |
 | `COCKPIT_ALLOW_API_KEY` | off | Set to `1` to let agents use an API key from the environment |
 | `COCKPIT_DEBUG` | off | Print the agents' diagnostic output in the server window |
+| `COCKPIT_HUB_URL` | none | Address of the Agent Hub (ai-chat's bridge, for example `http://127.0.0.1:8790`). Unset: no hub |
+| `COCKPIT_HUB_TOKEN` | none | The app token the hub's owner made for the cockpit. Or put it in `data/hub-token.txt` |
+
+## Agent Hub
+
+With `COCKPIT_HUB_URL` set, the cockpit joins the Agent Hub of ai-chat as an app. Each project gets one
+team conversation there and every agent of the project joins it, so the agents of a project can message
+each other with their bridge tools, whatever tool they run in. The cockpit carries the hub's messages into
+the windows it opened. Your own words are typed as you wrote them; another agent's words are never typed
+into a window, only a one-line notice, and the agent reads the message itself. The top bar shows whether
+the hub is connected.
 
 ## Safety
 

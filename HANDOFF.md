@@ -142,6 +142,47 @@ and names ZTART*). Not clicked by the owner yet unless said.
     question" because the agent's own answer quoted "Enter to confirm". **Not yet tested on a real question
     screen**: check once with `/model` that the hint is within the last 4 lines.
 
+## Changes of 20 Nov 2026
+
+Branches: `multi-tool` (items 1-6), then `hub-client` on top of it (items 7-9). Neither is merged into
+`main` nor pushed.
+
+1. **Helpers view.** Subagents and workflow agents an agent started are read from
+   `<session>/subagents/` and listed live: a header button ("N helpers working"), a side panel, rows inside
+   a workflow card; each helper's steps open like a chat. `listSubagents()`, `subagentItems()`.
+2. **Other tools: Codex, opencode, Hermes** (`harnesses.mjs`). Each has a read-only reader (Codex: the
+   rollout `.jsonl` files, tail only; opencode: `opencode.db`; Hermes: `state.db` of the default home and of
+   every profile) and the command that starts or resumes it in a window. New agent and Sessions have a Tool
+   choice. An agent of another tool finds its session by its name, or by start time soon after its window
+   opened (`attachOther()`).
+3. **Questions in a window** show as a card above the message box (read from the screen by the typing
+   helper, `windowScreen()`/`questionOf()`), with the answers as buttons; a message that was held by the
+   question goes out after the answer. The card also appears by itself (checked every 4 s while the agent
+   is on screen).
+4. **Model switch for Codex and opencode** (their own model lists; they switch when the window starts, so
+   the cockpit offers to reopen a window it opened). **Hermes picks a profile** instead (25 on this PC);
+   a profile whose Ollama model is missing is marked. The `ollama` profile names `qwen3.6-hermes:latest`,
+   which Ollama on this PC does not have.
+5. **Mic:** a stopped recognizer could deliver its last words after Send and refill the box; fixed.
+6. **Shutdown** writes the roster only when a save is pending. That one write took 1.4 s to over 5 s here
+   (virus scanner), and made every restart slow.
+7. **Agent Hub client** (`hub-client.mjs`, plan `docs/superpowers/plans/2026-11-20-cockpit-hub-client.md`,
+   design in ai-chat `docs/superpowers/specs/2026-11-20-agent-hub-design.md`). With `COCKPIT_HUB_URL` and an
+   app token the cockpit joins ai-chat's hub: one team conversation per project with every project agent
+   in it (`syncHub()`), each window it can type into is a `typing` route, and it carries the hub's
+   deliveries into its windows (`carryDelivery()`). A person's words are typed as they are; another agent's
+   words never are, only a notice ("[Team message … from PEPE. Read it with get_pending_messages.]"), which
+   the chat shows as a message card.
+8. **Not done from that plan:** Task 1, the hub's "managing app" routes (create a team conversation, find
+   or register an agent, bind it) in ai-chat. This session could not run or commit anything in ai-chat
+   (refused by auto mode). Until it exists the cockpit's team sync gets 404s and changes nothing. Plan 1 of
+   the hub (built by the CHATY session in ai-chat) is also uncommitted: Raul commits it.
+9. **Tests run on Windows now:** `node --test test/hub.test.mjs`, 13/13, about 15-60 s depending on how busy
+   the PC is. Test cockpits get `COCKPIT_TEST=1`, so they never look for the person's windows (they could
+   adopt and type into a real agent window) and do not start the PowerShell typing helper. The helper waits
+   for the cockpit's "is running" line (asking a port that is not listening yet costs about 2 s per try on
+   Windows) and stops a cockpit that fails to start, so a run cannot hang on it.
+
 ## Still open or unreliable
 
 - **Phone check (item 10).** Not done.

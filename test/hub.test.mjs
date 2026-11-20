@@ -11,9 +11,29 @@ const hubState = async c => (await c.call('GET', '/api/state')).json.hub;
 const agentNamed = async (c, n) => (await c.call('GET', '/api/state')).json.agents.find(a => a.name === n);
 const paths = (fake, p) => fake.calls.filter(x => (p instanceof RegExp ? p.test(x.path) : x.path === p));
 
-test('with no hub configured the cockpit reports the hub off', async () => {
-  const c = await startCockpit();
-  try { assert.equal((await hubState(c)).state, 'off'); } finally { await c.stop(); }
+describe('without a hub', () => {
+  let c;
+  before(async () => { c = await startCockpit(); });
+  after(async () => { if (c) await c.stop(); });
+
+  test('with no hub configured the cockpit reports the hub off', async () => {
+    assert.equal((await hubState(c)).state, 'off');
+  });
+
+  // What a teammate's message looks like in a window (deliveryText) shows as a message card, like Claude's own.
+  test('a teammate notice in a session shows as a message card', async () => {
+    const cwd = tempDir('notice');
+    writeSession(c.config, cwd, { id: 'bbbbbbbb-bbbb-4bbb-8bbb-000000000001', title: 'NOTED', turns: [
+      ['raw-user', deliveryText({ senderHarness: 'claude-code', senderName: 'PEPE', messageId: 'msg_7', content: 'secret words' })], ['assistant', 'Reading it.']] });
+    assert.equal((await c.call('POST', '/api/projects', { cwd })).status, 200);
+    const a = await until(async () => (await agentNamed(c, 'NOTED')));
+    const items = (await c.call('GET', `/api/agents/${a.id}/items`)).json.items;
+    const peer = items.find(i => i.k === 'peer');
+    assert.ok(peer, JSON.stringify(items.map(i => i.k)));
+    assert.equal(peer.from, 'PEPE');
+    assert.ok(peer.text.includes('msg_7'));
+    assert.ok(!items.some(i => i.k === 'user'), 'not shown as something the person typed');
+  });
 });
 
 // What is typed into a window, and what is reported back: no cockpit needed.

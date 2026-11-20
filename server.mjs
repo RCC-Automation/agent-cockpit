@@ -233,8 +233,12 @@ function serveView(a, req, res, token, rest) {
 
 // Text the CLI writes into user turns that the person did not type.
 // A message another agent sent to this one. It arrives as a user turn but the person did not type it.
+// A hub notice the cockpit typed for a teammate's message (hub-client.mjs deliveryText): a message card too.
+const TEAM_NOTICE = /^\s*\[Team message (\S+) from (.+?)\. Read it with get_pending_messages\.\]\s*$/;
 function parsePeer(t) {
   if (!t) return null;
+  const n = TEAM_NOTICE.exec(t);
+  if (n) return { from: n[2], text: `Team message ${n[1]}. ${n[2]} sent it through the Agent Hub; the agent reads it with get_pending_messages.` };
   const m = /<(cross-session-message|agent-message|teammate-message|peer-message)\b([^>]*)>([\s\S]*?)<\/\1>/.exec(t);
   if (m) { const from = /\bfrom="([^"]*)"/.exec(m[2]); return { from: from ? from[1] : '', text: m[3].trim() }; }
   if (/permission laundering|Another Claude session sent a message/i.test(t)) return { from: '', text: t.replace(/<\/?system-reminder\b[^>]*>/g, '').trim() };
