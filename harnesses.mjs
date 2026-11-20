@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { exec } from 'node:child_process';
 
 let sqlite = null;
 async function db(file) {
@@ -35,6 +36,19 @@ function infoFrom(items, busy) {
   if (last.k === 'user') return { kind: 'user', text: last.text };
   if (last.k === 'text') return busy ? { kind: 'result', text: '' } : { kind: 'text', text: last.text };
   return null;
+}
+
+// A tool's model list, from its own command, cached for 10 minutes. Never throws: an empty list then.
+const modelCache = new Map();
+function listOf(bin, args, parseOut) {
+  const c = modelCache.get(bin);
+  if (c && Date.now() - c.at < 600_000) return c.list;
+  // A fixed command line with no outside input: exec runs the tools' .cmd launchers on Windows too.
+  const list = new Promise(resolve => exec(`${bin} ${args.join(' ')}`, { timeout: 30_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (err, out) => {
+    try { resolve(err ? [] : parseOut(String(out))); } catch { resolve([]); }
+  }));
+  modelCache.set(bin, { at: Date.now(), list });
+  return list;
 }
 
 // ───────── OpenAI Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl ─────────
@@ -90,11 +104,13 @@ function codexFile(id) {
 }
 function codexItems(lines) {
   const items = [], calls = new Map();
-  let busy = false, n = 0;
+  let busy = false, n = 0, model = '';
   for (const l of lines) {
     if (!l) continue;
     const o = parse(l); if (!o || !o.payload) continue;
     const p = o.payload, id = p.id || p.call_id || `c${n++}`;
+    if (o.type === 'turn_context' && p.model) model = p.model;
+    if (o.type === 'event_msg' && p.type === 'thread_settings_applied' && p.thread_settings?.model) model = p.thread_settings.model;
     if (o.type === 'event_msg') {
       if (p.type === 'task_started') busy = true;
       else if (p.type === 'task_complete') busy = false;
@@ -116,7 +132,7 @@ function codexItems(lines) {
   }
   // Calls whose answer was never written (the turn ended) are not running any more.
   if (!busy) for (const it of calls.values()) if (it.status === 'run') it.status = 'ok';
-  return { items, busy };
+  return { items, busy, model };
 }
 const codex = {
   id: 'codex', label: 'Codex', bin: 'codex',
@@ -137,13 +153,17 @@ const codex = {
   read(id) {
     const f = codexFile(id); if (!f) return null;
     const st = fs.statSync(f);
-    const { items, busy } = codexItems(readEnd(f, st.size, CODEX_TAIL));
+    const { items, busy, model } = codexItems(readEnd(f, st.size, CODEX_TAIL));
     if (st.size > CODEX_TAIL) items.unshift({ k: 'note', id: 'older', text: 'Older messages are not shown: this session is very long.' });
-    return { items, info: infoFrom(items, busy), mtime: st.mtimeMs, busy };
+    return { items, info: infoFrom(items, busy), mtime: st.mtimeMs, busy, model };
   },
+  // The models Codex offers (its own list; hidden ones left out).
+  models() { return listOf('codex', ['debug', 'models'], out => (JSON.parse(out).models || []).filter(m => m.visibility !== 'hide').map(m => m.slug)); },
+  // A model can be chosen when a window starts or resumes; a running Codex window cannot switch by typed text.
+  liveSwitch: false,
   args(a, first) {
     const args = a.sessionId ? ['resume', a.sessionId] : [];
-    if (!a.sessionId && a.model) args.push('-m', a.model);
+    if (a.model) args.push('-m', a.model);
     if (first) args.push(first.replace(/\s+/g, ' ').trim());
     return args;
   },
@@ -178,9 +198,11 @@ const opencode = {
       const byMsg = new Map();
       let mtime = s.time_updated;
       for (const p of parts) { if (!byMsg.has(p.message_id)) byMsg.set(p.message_id, []); byMsg.get(p.message_id).push(p); mtime = Math.max(mtime, p.time_updated); }
-      const items = []; let busy = false;
+      const items = []; let busy = false, model = '';
       for (const m of msgs) {
         const md = parse(m.data) || {}; mtime = Math.max(mtime, m.time_updated);
+        const mp = md.model?.providerID || md.providerID, mi = md.model?.modelID || md.modelID;
+        if (mi) model = mp ? `${mp}/${mi}` : mi;
         if (md.role === 'assistant') busy = !md.time?.completed && !md.error;
         for (const p of byMsg.get(m.id) || []) {
           const pd = parse(p.data) || {};
@@ -194,12 +216,14 @@ const opencode = {
         if (md.role === 'assistant' && md.error) items.push({ k: 'note', id: `${m.id}:err`, text: 'Error: ' + (md.error.data?.message || md.error.name || 'the turn failed') });
       }
       if (!busy) for (const it of items) if (it.k === 'tool' && it.status === 'run') it.status = 'ok';
-      return { items, info: infoFrom(items, busy), mtime, busy };
+      return { items, info: infoFrom(items, busy), mtime, busy, model };
     } finally { d.close(); }
   },
+  models() { return listOf('opencode', ['models'], out => out.split(/\r?\n/).map(l => l.trim()).filter(l => /^[\w.-]+\/\S+$/.test(l))); },
+  liveSwitch: false,
   args(a, first) {
     const args = a.sessionId ? ['-s', a.sessionId] : [];
-    if (!a.sessionId && a.model) args.push('-m', a.model);
+    if (a.model) args.push('-m', a.model);
     if (first) args.push('--prompt', first.replace(/\s+/g, ' ').trim());
     return args;
   },
@@ -233,7 +257,7 @@ const hermes = {
     if (!fs.existsSync(HERMES_DB)) return null;
     const d = await db(HERMES_DB);
     try {
-      const s = d.prepare('SELECT started_at, ended_at, last_activity_at FROM sessions WHERE id = ?').get(id); if (!s) return null;
+      const s = d.prepare('SELECT started_at, ended_at, last_activity_at, model FROM sessions WHERE id = ?').get(id); if (!s) return null;
       const rows = d.prepare('SELECT id, role, content, tool_calls, tool_call_id, tool_name, timestamp, finish_reason, reasoning_content, reasoning FROM messages WHERE session_id = ? AND active = 1 ORDER BY id').all(id);
       const items = [], calls = new Map();
       let mtime = (s.last_activity_at || s.started_at) * 1000, waiting = false;
@@ -257,14 +281,24 @@ const hermes = {
       }
       const busy = waiting && !s.ended_at;
       if (!busy) for (const it of calls.values()) if (it.status === 'run') it.status = 'ok';
-      return { items, info: s.ended_at && !items.length ? null : infoFrom(items, busy), mtime, busy };
+      return { items, info: s.ended_at && !items.length ? null : infoFrom(items, busy), mtime, busy, model: s.model || '' };
     } finally { d.close(); }
   },
+  // Models this PC's Hermes sessions used, newest first: Hermes has no offline list of its own.
+  async models() {
+    if (!fs.existsSync(HERMES_DB)) return [];
+    const d = await db(HERMES_DB);
+    try { return d.prepare("SELECT model, MAX(started_at) t FROM sessions WHERE model IS NOT NULL AND model != '' GROUP BY model ORDER BY t DESC LIMIT 40").all().map(r => r.model); }
+    finally { d.close(); }
+  },
+  // Hermes switches with "/model <name>" typed in its window (for this session only).
+  liveSwitch: true,
   // A new Hermes session is created under the agent's name, so the cockpit can find it again by that name.
   args(a, first) {
     const args = ['chat'];
     if (a.sessionId) args.push('--resume', a.sessionId);
-    else { args.push('--continue', a.title || a.name, '--create-if-missing'); if (a.model) args.push('-m', a.model); }
+    else args.push('--continue', a.title || a.name, '--create-if-missing');
+    if (a.model) args.push('-m', a.model);
     if (first) args.push('-q', first.replace(/\s+/g, ' ').trim());
     return args;
   },

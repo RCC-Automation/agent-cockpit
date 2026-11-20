@@ -122,6 +122,7 @@ function publicAgent(a) {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), adopted: !!(a.term && a.term.adopted && a.term.alive !== false), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
     login: a.login || null, cost: r.watch.cost || 0, harness: harnessOf(a), harnessLabel: HARNESS_LABELS[harnessOf(a)],
+    modelLive: otherTool(a) ? (r.watch.model || '') : '', liveSwitch: otherTool(a) ? !!otherTool(a).liveSwitch : true,
   };
 }
 
@@ -637,6 +638,7 @@ async function pollOther(a, tool) {
   if (stamp !== w.stamp) {
     const got = await tool.read(a.sessionId); if (!got) return;
     w.stamp = stamp; w.mtime = got.mtime; w.info = got.info;
+    if (got.model && got.model !== w.model) { w.model = got.model; emitAgent(a); }
   }
   if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
   applyWatchState(a);
@@ -1262,6 +1264,13 @@ const routes = {
     console.log('Shut down on request.' + (paused.length ? ' Interrupted in the middle of a turn: ' + paused.join(', ') : ''));
     setTimeout(shutdown, 500);
   },
+  // The models a tool offers, for the model menu of its agents.
+  'GET /api/models': async (req, res, url) => {
+    const tool = HARNESSES[url.searchParams.get('harness') || ''];
+    if (!tool || !tool.models) return json(res, 200, { models: [] });
+    let models = []; try { models = await tool.models(); } catch { /* an empty menu, typed names still work */ }
+    json(res, 200, { models });
+  },
   'GET /api/state': async (req, res) => {
     json(res, 200, { projects: [...projects.values()].map(publicProject), agents: [...agents.values()].map(publicAgent), home: os.homedir(), platform: process.platform, tokenRequired: !!TOKEN });
   },
@@ -1409,6 +1418,33 @@ const agentRoutes = {
     await closeWindow(a);
     rt(a.id).status = 'idle'; touch(a, 'Stopped. Its terminal window was closed.');
     json(res, 200, { ok: true });
+  },
+  // Switches the model of an agent of another tool. Hermes switches in its window ("/model <name>", this session
+  // only). Codex and opencode take a model only when a window starts or resumes: the choice is saved, and with
+  // reopen the cockpit closes the window it opened and resumes the same chat in a new one with that model.
+  'POST model': async (a, req, res) => {
+    const b = await readBody(req);
+    const tool = otherTool(a), model = String(b.model || '').trim();
+    if (!tool) return json(res, 400, { error: 'For a Claude Code agent the model is switched with /model.' });
+    if (!model || /\s/.test(model) || model.length > 200) return json(res, 400, { error: 'Write a model name without spaces.' });
+    if (tool.liveSwitch) {
+      const block = typeBlock(a, false);
+      if (block) return json(res, 409, { error: `${a.name}: ${block.why}.` });
+      const out = (await typeToAgents([a], `/model ${model}`, true, true)).get(a.id);
+      if (out === QUESTION) return json(res, 409, { error: `${a.name}: ${QUESTION_WHY}.` });
+      if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
+      a.model = model; touch(a); nudgeWatch(a);
+      return json(res, 200, { ok: true, applied: 'now' });
+    }
+    a.model = model; touch(a);
+    if (!b.reopen) return json(res, 200, { ok: true, applied: 'next start' });
+    if (!termKnown(a) || a.term.alive === false) return json(res, 200, { ok: true, applied: 'next start' });
+    if (a.term.adopted) return json(res, 409, { error: `${a.name} runs in a window you opened yourself, so the cockpit does not close it. The new model applies when the cockpit opens its window.` });
+    if (rt(a.id).status === 'work') return json(res, 409, { error: `${a.name} is working. Switch when it has finished, so nothing is cut off.` });
+    await closeWindow(a);
+    try { await openTerminal(a); } catch (e) { return json(res, 500, { error: e.message }); }
+    touch(a, `Reopened with ${model}.`);
+    json(res, 200, { ok: true, applied: 'reopened' });
   },
   // Answers a question that waits in the window: an answer with Enter, Enter alone, or Esc.
   'POST answer': async (a, req, res) => {

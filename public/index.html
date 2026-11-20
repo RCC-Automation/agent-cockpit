@@ -192,6 +192,8 @@ details.steps > summary .t code{font-family:var(--mono);font-size:.85em;color:va
 .sub-row .mdl{color:var(--ink-3);font-size:.72rem;white-space:nowrap}
 .s-done{--c:var(--done)}
 .tool-pill{--c:var(--accent)}
+.model-pick{display:inline-flex;gap:6px;align-items:center}
+.model-pick input{border:1px solid var(--line);border-radius:7px;padding:3px 8px;background:var(--surface);font-size:.8rem}
 .tool-tabs{gap:6px}
 .subs-busy{display:inline-flex;align-items:center;gap:6px;color:var(--work)}
 .subs-body{flex:1;min-height:0;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:14px}
@@ -508,6 +510,7 @@ function renderHead() {
      ...MODEL_CHOICES.map(([v, t]) => h('option', { value: v, text: t, selected: cur === v })),
      cur && !MODEL_CHOICES.some(([v]) => v === cur) ? h('option', { value: cur, text: cur, selected: true }) : null,
      h('option', { value: 'custom', text: 'Other…' })].filter(Boolean)) : null;
+  const otherModel = watch && !claude ? toolModelButton(a) : null;
   const p = curProject(); const sub = p && a.cwd !== p.cwd ? a.cwdShort : null;
   els.head.append(...[
     h('span', { class: 'cs', text: a.name, title: 'Click to rename', onclick: () => { const n = prompt('Agent name', a.name); if (n && n.trim()) api('POST', `/api/agents/${a.id}/settings`, { name: n.trim() }).catch(x => toast(x.message)); } }),
@@ -517,7 +520,7 @@ function renderHead() {
     watch ? h('span', { class: 'pill s-idle', text: a.window === 'closed' ? 'terminal window closed' : a.adopted ? 'runs in a window you opened' : a.window === 'open' ? 'runs in its terminal window' : 'runs in a terminal', title: a.adopted ? 'You opened this window yourself. The cockpit found it, can type into it, and never closes it' : 'The agent lives in a terminal window' }) : null,
     claude ? null : h('span', { class: 'pill tool-pill', text: a.harnessLabel, title: `This agent runs in ${a.harnessLabel}, not Claude Code` }),
     subsButton(a),
-    model,
+    model, otherModel,
     claude ? mode : null,
     watch && a.talk && a.status === 'work' ? h('button', { class: 'btn sm', type: 'button', text: 'Interrupt', title: 'Press Esc in its terminal window: it stops what it is doing and waits for you', onclick: () => api('POST', `/api/agents/${a.id}/interrupt`).catch(x => toast(x.message)) }) : null,
     watch && a.window === 'open' && !a.adopted ? h('button', { class: 'btn sm danger', type: 'button', text: 'Close window', title: 'Close its terminal window and stop the agent', onclick: () => stopTerm(a) }) : null,
@@ -526,6 +529,42 @@ function renderHead() {
     h('button', { class: 'btn sm', type: 'button', text: 'Remove', title: 'Remove from the cockpit. The session stays on disk and can be resumed.', onclick: () => { if (confirm(`Remove ${a.name} from the cockpit?\nIts session stays on disk and can be resumed later.`)) api('DELETE', `/api/agents/${a.id}`).catch(x => toast(x.message)); } }),
   ].filter(Boolean));
   if (els.typing) { els.typing.hidden = a.status !== 'work'; els.typing.lastChild.textContent = `${a.name} is working`; }
+}
+// The model of a Codex, opencode or Hermes agent: what it uses now (read from its own history), and a box to
+// pick another one from that tool's list or type a name. Hermes switches at once; Codex and opencode switch
+// when their window starts again, which the cockpit offers to do now.
+const toolModels = new Map();
+function toolModelButton(a) {
+  const now = a.modelLive || a.model || '';
+  const b = h('button', { class: 'btn sm', type: 'button', text: 'Model: ' + (now || 'default'), title: `The model ${a.name} uses. Click to switch.`, onclick: () => {
+    if (b.nextSibling && b.nextSibling.classList && b.nextSibling.classList.contains('model-pick')) { b.nextSibling.remove(); return; }
+    const listId = 'models-' + a.harness;
+    const input = h('input', { type: 'text', list: listId, value: now, placeholder: 'model name', 'aria-label': 'Model name', style: 'min-width:240px' });
+    const dl = h('datalist', { id: listId });
+    const fill = list => dl.replaceChildren(...list.map(m => h('option', { value: m })));
+    if (toolModels.has(a.harness)) fill(toolModels.get(a.harness));
+    else api('GET', `/api/models?harness=${a.harness}`).then(d => { toolModels.set(a.harness, d.models); fill(d.models); }).catch(() => {});
+    const apply = async () => {
+      const v = input.value.trim(); if (!v || v === now) { box.remove(); return; }
+      let reopen = false;
+      if (!a.liveSwitch) {
+        if (a.window === 'open' && !a.adopted) {
+          if (!confirm(`${a.harnessLabel} can only switch model when its window starts.\n\nClose ${a.name}'s window and reopen it with ${v} now? The same chat continues.\n\nCancel keeps the window and uses ${v} the next time it opens.`)) reopen = false; else reopen = true;
+        }
+      }
+      go.disabled = true;
+      try {
+        const d = await api('POST', `/api/agents/${a.id}/model`, { model: v, reopen });
+        toast(d.applied === 'now' ? `${a.name} now uses ${v}.` : d.applied === 'reopened' ? `${a.name}'s window reopened with ${v}.` : `${a.name} uses ${v} the next time its window opens.`);
+        box.remove();
+      } catch (x) { toast(x.message); go.disabled = false; }
+    };
+    const go = h('button', { class: 'btn sm primary', type: 'button', text: 'Switch', onclick: apply });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') apply(); if (e.key === 'Escape') box.remove(); });
+    const box = h('span', { class: 'model-pick' }, input, dl, go);
+    b.after(box); input.focus(); input.select();
+  } });
+  return b;
 }
 function nearBottom() { const t = els.thread; return !t || t.scrollHeight - t.scrollTop - t.clientHeight < 140; }
 function scrollDown(force) { const t = els.thread; if (t && (force || nearBottom())) t.scrollTop = t.scrollHeight; }
