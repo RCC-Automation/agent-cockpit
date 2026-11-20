@@ -63,3 +63,55 @@ export async function until(fn, ms = 12000) {
   while (Date.now() < end) { last = await fn(); if (last) return last; await new Promise(r => setTimeout(r, 250)); }
   return last;
 }
+
+// A stand-in for the Agent Hub (ai-chat), in this process. It answers the routes the cockpit uses the way
+// ai-chat's hub does (plan 1, poc/src/bridge/hub-routes.js), records every call, and can push frames.
+// `elsewhere`: agent display names the hub reports as bound to another chat.
+export async function startFakeHub({ token = 'app_test_token', elsewhere = [] } = {}) {
+  const http = await import('node:http');
+  const calls = [], streams = new Set();
+  let n = 0;
+  const bySession = new Map();
+  const send = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+  const frame = (res, f) => res.write(`event: ${f.t}\ndata: ${JSON.stringify(f)}\n\n`);
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://x');
+    let raw = ''; for await (const c of req) raw += c;
+    const body = raw ? JSON.parse(raw) : undefined;
+    const call = { method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, auth: req.headers.authorization || '' };
+    calls.push(call);
+    if (call.auth !== `Bearer ${token}`) return send(res, 401, { error: 'app_token_required', message: 'no' });
+    const p = url.pathname;
+    if (p === '/v1/app/stream') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return frame(res, { t: 'ready', appId: 'app_1' });
+    }
+    if (p === '/v1/app/conversations' && req.method === 'POST') return send(res, 201, { conversationId: `conv_${++n}` });
+    if (p === '/v1/app/agents/by-session') {
+      const id = bySession.get(`${call.query.harness}:${call.query.sessionId}`);
+      return id ? send(res, 200, { agentId: id, displayName: '', conversationId: null }) : send(res, 404, { error: 'unknown_session', message: 'no' });
+    }
+    if (p === '/v1/app/agents' && req.method === 'POST') {
+      const id = `agt_${++n}`; bySession.set(`${body.harness}:${body.sessionId}`, id); call.agentId = id;
+      return send(res, 201, { agentId: id });
+    }
+    if (p === '/v1/app/bindings' && req.method === 'POST') {
+      const reg = calls.find(c => c.agentId === body.agentId);
+      if (reg && elsewhere.includes(reg.body.displayName)) return send(res, 409, { error: 'bound_elsewhere', message: 'in another chat', conversationId: 'conv_other' });
+      return send(res, 200, { bound: true });
+    }
+    if (p === '/v1/app/routes' && req.method === 'POST') return send(res, 201, { routeId: `rte_${++n}` });
+    if (/^\/v1\/app\/deliveries\/[^/]+\/outcome$/.test(p)) return send(res, 200, { ok: true });
+    send(res, 404, { error: 'not_found', message: p });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  return {
+    url, token, calls,
+    push: f => { for (const s of streams) frame(s, f); },
+    streams: () => streams.size,
+    dropStream: () => { for (const s of streams) s.destroy(); streams.clear(); },
+    close: () => new Promise(r => { for (const s of streams) s.destroy(); server.close(r); }),
+  };
+}

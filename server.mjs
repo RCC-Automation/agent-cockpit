@@ -11,6 +11,7 @@ import { exec, execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
+import { hubConfig, createHubClient } from './hub-client.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
 const harnessOf = a => (a && HARNESSES[a.harness]) ? a.harness : 'claude';
@@ -1274,7 +1275,7 @@ const routes = {
     json(res, 200, { models, profiles: tool.profiles ? await tool.profiles() : null });
   },
   'GET /api/state': async (req, res) => {
-    json(res, 200, { projects: [...projects.values()].map(publicProject), agents: [...agents.values()].map(publicAgent), home: os.homedir(), platform: process.platform, tokenRequired: !!TOKEN });
+    json(res, 200, { projects: [...projects.values()].map(publicProject), agents: [...agents.values()].map(publicAgent), home: os.homedir(), platform: process.platform, tokenRequired: !!TOKEN, hub: hubState() });
   },
 
   'GET /api/events': async (req, res) => {
@@ -1663,6 +1664,19 @@ function teeLog() {
   } catch { /* logging is optional */ }
 }
 
+// ───────────────────────── Agent Hub ─────────────────────────
+// With COCKPIT_HUB_URL set, the cockpit joins the hub (ai-chat) as an app: the agents of a project reach each
+// other through it, and the cockpit carries its messages into the windows it opened.
+let hub = null;
+function hubState() { return hub ? hub.state() : { state: 'off', error: '' }; }
+function onHubFrame(frame) { /* deliveries, answers and interrupts: Task 4 */ }
+function startHub() {
+  const conf = hubConfig(DATA_DIR);
+  if (!conf) return;
+  hub = createHubClient({ url: conf.url, token: conf.token, onFrame: onHubFrame, onState: () => broadcast({ t: 'hub', hub: hubState() }) });
+  hub.start();
+}
+
 function start() {
   teeLog();
   let tries = 0;
@@ -1677,6 +1691,7 @@ function start() {
     setTimeout(adoptWindows, 4000);
     // Start the typing helper now, so the first message does not wait for it (it takes 10 to 45 s here).
     if (process.platform === 'win32') setTimeout(() => typerStart().catch(() => {}), 6000);
+    startHub();
     console.log(`\n  Agent Cockpit is running:  ${shownUrl()}${TOKEN ? '?token=…' : ''}`);
     console.log(`  ${projects.size} project(s), ${agents.size} agent(s) · data in ${DATA_DIR}`);
     console.log('  Agents in terminal windows keep running when the cockpit stops.');
