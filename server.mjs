@@ -123,7 +123,7 @@ function publicAgent(a) {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), adopted: !!(a.term && a.term.adopted && a.term.alive !== false), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
     login: a.login || null, cost: r.watch.cost || 0, harness: harnessOf(a), harnessLabel: HARNESS_LABELS[harnessOf(a)],
-    modelLive: otherTool(a) ? (r.watch.model || '') : '', profile: a.profile || '', liveSwitch: otherTool(a) ? !!otherTool(a).liveSwitch : true,
+    modelLive: otherTool(a) ? (r.watch.model || '') : '', profile: a.profile || '', hubTeam: a.hubTeam || null, liveSwitch: otherTool(a) ? !!otherTool(a).liveSwitch : true,
   };
 }
 
@@ -630,7 +630,7 @@ async function attachOther(a, tool) {
   const s = list.find(x => !used.has(x.sessionId) && x.title.toLowerCase() === name)
     || (fresh ? list.filter(x => !used.has(x.sessionId) && x.createdAt >= a.term.openedAt - 15_000).sort((x, y) => x.createdAt - y.createdAt)[0] : null);
   if (!s) return;
-  a.sessionId = s.sessionId; saveRoster(); emitAgent(a);
+  a.sessionId = s.sessionId; a.hubAgentId = null; a.hubTeam = null; saveRoster(); emitAgent(a);
   broadcast({ t: 'reset', agentId: a.id }); // the page loaded the empty chat before this session was found
 }
 async function pollOther(a, tool) {
@@ -708,7 +708,7 @@ async function scanProjects() {
         const s = newest.get((a.title || a.name).toLowerCase());
         if (!s || s.sessionId === a.sessionId || used.has(s.sessionId)) continue;
         used.add(s.sessionId);
-        a.sessionId = s.sessionId;
+        a.sessionId = s.sessionId; a.hubAgentId = null; a.hubTeam = null;
         const r = rt(a.id);
         r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 }; r.items = []; r.historyLoaded = false;
         saveRoster(); broadcast({ t: 'reset', agentId: a.id }); emitAgent(a);
@@ -716,6 +716,7 @@ async function scanProjects() {
       if (p.autoImport !== false) { try { await importNamed(p, list); } catch { /* next scan */ } }
     }
   } finally { scanBusy = false; }
+  syncHub().catch(() => {});
 }
 
 // ───────────────────────── terminal windows ─────────────────────────
@@ -1336,6 +1337,7 @@ const routes = {
     broadcast({ t: 'project', project: publicProject(p) });
     let imported = 0;
     if (b.importNamed !== false) { try { imported = (await importNamed(p)).length; } catch (e) { console.error('[import]', e.message); } }
+    if (imported) setTimeout(() => syncHub().catch(() => {}), 300);
     json(res, 200, { project: publicProject(p), imported });
   },
 
@@ -1360,7 +1362,7 @@ const routes = {
       last: b.sessionId ? 'Open terminal to continue it in its own window.' : 'Starting in a terminal window.',
     };
     if (a.title && proj.ignored) proj.ignored = proj.ignored.filter(t => t.toLowerCase() !== a.title.toLowerCase());
-    agents.set(a.id, a); saveRoster();
+    agents.set(a.id, a); saveRoster(); setTimeout(() => syncHub().catch(() => {}), 500);
     const r = rt(a.id);
     if (b.sessionId) { a.last = ''; emitAgent(a); return json(res, 200, { agent: publicAgent(a) }); } // resumed: shown live, Open terminal gives it a window
     // A new agent: the terminal creates the session. The roster shows a placeholder that attaches to it by name.
@@ -1463,7 +1465,7 @@ const agentRoutes = {
       if (a.term.adopted) return json(res, 409, { error: `${a.name} runs in a window you opened yourself, so the cockpit does not close it.` });
       if (rt(a.id).status === 'work') return json(res, 409, { error: `${a.name} is working. Switch when it has finished, so nothing is cut off.` });
     }
-    a.profile = profile; a.sessionId = null; a.model = '';
+    a.profile = profile; a.sessionId = null; a.model = ''; a.hubAgentId = null; a.hubTeam = null;
     const r = rt(a.id); r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 }; r.items = []; r.historyLoaded = false; attachTried.delete(a.id);
     broadcast({ t: 'reset', agentId: a.id });
     if (!b.reopen || !termKnown(a) || a.term.alive === false) { touch(a, `Uses the Hermes profile ${profile || 'default'} when its window opens.`); return json(res, 200, { ok: true, applied: 'next start' }); }
@@ -1673,8 +1675,46 @@ function onHubFrame(frame) { /* deliveries, answers and interrupts: Task 4 */ }
 function startHub() {
   const conf = hubConfig(DATA_DIR);
   if (!conf) return;
-  hub = createHubClient({ url: conf.url, token: conf.token, onFrame: onHubFrame, onState: () => broadcast({ t: 'hub', hub: hubState() }) });
+  hub = createHubClient({ url: conf.url, token: conf.token, onFrame: onHubFrame, onState: s => { broadcast({ t: 'hub', hub: hubState() }); if (s === 'connected') syncHub(); } });
   hub.start();
+}
+// The hub's name for each tool (an identity is found by tool and session id).
+const HUB_HARNESS = { claude: 'claude-code', codex: 'codex', opencode: 'opencode', hermes: 'hermes' };
+// Each project gets one team conversation on the hub, and every agent of the project with a session is bound
+// to it, so the agents of a project reach each other. An agent the hub reports in another chat stays there.
+// A call that fails leaves the record as it was; the next run tries again.
+let hubSyncBusy = false;
+async function syncHub() {
+  if (!hub || hub.state().state !== 'connected' || hubSyncBusy) return;
+  hubSyncBusy = true;
+  try {
+    for (const p of [...projects.values()]) {
+      const team = [...agents.values()].filter(a => a.projectId === p.id && a.sessionId && !a.hubAgentId);
+      if (!team.length) continue;
+      if (!p.hubConversationId) {
+        const r = await hub.call('POST', '/v1/app/conversations', { label: `cockpit: ${p.name}` });
+        if (r.status !== 201 || !r.json?.conversationId) continue;
+        p.hubConversationId = r.json.conversationId; saveRoster();
+      }
+      for (const a of team) {
+        if (!agents.has(a.id) || a.hubAgentId) continue;
+        const harness = HUB_HARNESS[harnessOf(a)], sid = a.sessionId;
+        let id = null;
+        const f = await hub.call('GET', `/v1/app/agents/by-session?harness=${encodeURIComponent(harness)}&sessionId=${encodeURIComponent(sid)}`);
+        if (f.status === 200) id = f.json?.agentId;
+        else if (f.status === 404) {
+          const r = await hub.call('POST', '/v1/app/agents', { displayName: a.name, harness, sessionId: sid });
+          if (r.status === 200 || r.status === 201) id = r.json?.agentId;
+        }
+        if (!id || a.sessionId !== sid) continue;
+        const b = await hub.call('POST', '/v1/app/bindings', { agentId: id, conversationId: p.hubConversationId });
+        if (b.status === 200) a.hubTeam = 'team';
+        else if (b.status === 409 && b.json?.error === 'bound_elsewhere') a.hubTeam = 'other';
+        else continue;
+        a.hubAgentId = id; saveRoster(); emitAgent(a);
+      }
+    }
+  } finally { hubSyncBusy = false; }
 }
 
 function start() {

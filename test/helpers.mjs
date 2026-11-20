@@ -52,8 +52,17 @@ export async function startCockpit(extraEnv = {}) {
     let json = null; const text = await res.text(); try { json = JSON.parse(text); } catch { /* not JSON */ }
     return { status: res.status, json, text, headers: res.headers };
   };
-  const up = async () => { for (let i = 0; i < 60; i++) { try { if ((await call('GET', '/api/health')).status === 200) return; } catch { /* not yet */ } await new Promise(r => setTimeout(r, 150)); } throw new Error('cockpit did not start'); };
-  const stop = async () => { try { await call('POST', '/api/shutdown', {}); } catch { /* already gone */ } await new Promise(r => { if (child.exitCode !== null) return r(); child.once('exit', r); setTimeout(() => { child.kill('SIGKILL'); r(); }, 4000); }); };
+  const up = async () => {
+    for (let i = 0; i < 60; i++) { try { if ((await call('GET', '/api/health')).status === 200) return; } catch { /* not yet */ } await new Promise(r => setTimeout(r, 150)); }
+    let log = ''; try { log = fs.readFileSync(path.join(data, 'cockpit.log'), 'utf8').split(/\r?\n/).slice(-8).join(' | '); } catch { /* none */ }
+    throw new Error('cockpit did not start. Its log ends with: ' + log);
+  };
+  // The exit listener goes on before the shutdown request: a cockpit that exits quickly is never missed.
+  const stop = async () => {
+    const gone = new Promise(r => { if (child.exitCode !== null || child.signalCode !== null) return r(); child.once('exit', r); setTimeout(() => { child.kill('SIGKILL'); r(); }, 4000); });
+    try { await call('POST', '/api/shutdown', {}); } catch { /* already gone */ }
+    await gone;
+  };
   boot(); await up();
   return { port, data, config, base, call, stop, restart: async () => { await stop(); boot(); await up(); } };
 }
