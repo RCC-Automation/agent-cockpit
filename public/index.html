@@ -1254,6 +1254,16 @@ function viewNew() {
     model.options[0].text = claude ? 'Default (as in Claude Code)' : `Default (as in ${TOOLS[tool.value]})`;
     const hermes = tool.value === 'hermes';
     profileLabelEl.hidden = !hermes; modelLabel.hidden = hermes;
+    // Codex and opencode: the models the tool itself lists, between Default and Other….
+    for (const o of [...model.querySelectorAll('option.tool-model')]) o.remove();
+    if (!claude && !hermes) {
+      const want = tool.value;
+      api('GET', `/api/models?harness=${encodeURIComponent(want)}`).then(d => {
+        if (tool.value !== want) return;
+        const other = model.querySelector('option[value="custom"]');
+        for (const m of d.models || []) other.before(h('option', { class: 'tool-model', value: m, text: m }));
+      }).catch(() => { /* Other… still takes any name */ });
+    }
     if (hermes) loadProfiles().then(list => profile.replaceChildren(...list.map(p => h('option', { value: p.name, text: profileLabel(p) }))));
   });
   const win = S.platform === 'win32' ? 'PowerShell window' : 'terminal window';
