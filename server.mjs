@@ -10,6 +10,11 @@ import crypto from 'node:crypto';
 import { exec, execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
+import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
+
+// Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
+const harnessOf = a => (a && HARNESSES[a.harness]) ? a.harness : 'claude';
+const otherTool = a => harnessOf(a) !== 'claude' ? HARNESSES[a.harness] : null;
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.COCKPIT_PORT || 4600);
@@ -116,7 +121,7 @@ function publicAgent(a) {
   return {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), adopted: !!(a.term && a.term.adopted && a.term.alive !== false), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
-    login: a.login || null, cost: r.watch.cost || 0,
+    login: a.login || null, cost: r.watch.cost || 0, harness: harnessOf(a), harnessLabel: HARNESS_LABELS[harnessOf(a)],
   };
 }
 
@@ -417,14 +422,15 @@ function readTail(file, size) {
 }
 
 // What the session did last, read from the end of its file.
-function tailInfo(lines, cwd) {
+function tailInfo(lines, cwd, side = false) {
   let info = null, cost = null, mode = null;
   for (let i = lines.length - 1; i >= 0 && !(info && cost != null && mode != null); i--) {
     if (!lines[i]) continue;
     let o; try { o = JSON.parse(lines[i]); } catch { continue; }
     if (cost == null && o.type === 'cost-state' && typeof o.totalCostUSD === 'number') { cost = o.totalCostUSD; continue; }
     if (mode == null && o.type === 'user' && typeof o.permissionMode === 'string') mode = o.permissionMode;
-    if (info || o.isSidechain || o.isMeta || (o.type !== 'user' && o.type !== 'assistant')) continue;
+    if (side && info) break;
+    if (info || (o.isSidechain && !side) || o.isMeta || (o.type !== 'user' && o.type !== 'assistant')) continue;
     const c = o.message?.content;
     if (o.type === 'assistant') {
       if (!Array.isArray(c)) continue;
@@ -485,7 +491,9 @@ async function loadWatched(a, force = false) {
   const at = w.mtime;
   w.loading = (async () => {
     try {
-      applyHistory(a, itemsFromHistory(await getSessionMessages(a.sessionId, { dir: a.cwd }), a, true), !r.historyLoaded);
+      const tool = otherTool(a);
+      const fresh = tool ? finishOther(a, (await tool.read(a.sessionId))?.items || []) : itemsFromHistory(await getSessionMessages(a.sessionId, { dir: a.cwd }), a, true);
+      applyHistory(a, fresh, !r.historyLoaded);
       w.loadedMtime = at; r.historyLoaded = true;
     } catch (e) { if (process.env.COCKPIT_DEBUG) console.error(`[${a.name}] history:`, e.message); }
     finally { w.loading = null; }
@@ -493,7 +501,144 @@ async function loadWatched(a, force = false) {
   return w.loading;
 }
 
+// ───────────────────────── helpers an agent started (subagents and workflows) ─────────────────────────
+// Claude Code writes each helper's work to its own file next to the session:
+//   <session>/subagents/agent-<id>.jsonl (+ .meta.json)                 a helper started with the Agent tool
+//   <session>/subagents/workflows/<runId>/agent-<id>.jsonl, journal.jsonl  the helpers of one workflow run
+// The cockpit only reads these files.
+const SUB_FRESH_MS = 120_000;
+const readJson = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+function subAgentInfo(file, cwd) {
+  let st; try { st = fs.statSync(file); } catch { return null; }
+  const lines = readTail(file, st.size);
+  const t = tailInfo(lines, cwd, true);
+  let steps = 0, model = '', done = false, wait = 0;
+  for (const l of lines) {
+    if (!l.includes('"assistant"') && !l.includes('"user"')) continue;
+    let o; try { o = JSON.parse(l); } catch { continue; }
+    if (o.type === 'user') { wait = 0; continue; }
+    if (o.type !== 'assistant') continue;
+    model = o.message?.model || model;
+    const c = Array.isArray(o.message?.content) ? o.message.content : [];
+    const tools = c.filter(b => b.type === 'tool_use');
+    steps += tools.length;
+    done = o.message?.stop_reason === 'end_turn' && !tools.length;
+    // A helper waiting for a long command writes nothing until it ends, so it counts as working for as
+    // long as that command may take.
+    wait = tools.length ? Math.max(SUB_FRESH_MS, ...tools.map(b => Number(b.input?.timeout) || 0)) + 5 * 60_000 : 0;
+  }
+  return { mtime: Math.round(st.mtimeMs), steps, model, endTurn: done, wait, last: t.info ? t.info.text.replace(/\s+/g, ' ').slice(0, 200) : '' };
+}
+function subStatus(info, journal) {
+  if (journal === 'failed') return 'failed';
+  if (journal === 'done') return 'done';
+  const fresh = Date.now() - info.mtime < (info.wait || SUB_FRESH_MS);
+  if (info.endTurn) return 'done';
+  if (fresh) return 'run';
+  return 'stopped';
+}
+function listSubagents(a) {
+  if (otherTool(a)) return [];
+  const file = sessionFile(a); if (!file) return [];
+  const base = path.join(path.dirname(file), path.basename(file, '.jsonl'));
+  const dir = path.join(base, 'subagents'), runs = [];
+  const ls = d => { try { return fs.readdirSync(d); } catch { return []; } };
+  const one = (d, f, extra) => {
+    const id = f.slice(6, -6), info = subAgentInfo(path.join(d, f), a.cwd);
+    if (!info) return null;
+    const meta = readJson(path.join(d, `agent-${id}.meta.json`)) || {};
+    return { id, label: extra.label || meta.description || meta.agentType || 'helper', phase: extra.phase || meta.workflowPhase || '',
+      type: meta.agentType || '', model: info.model.replace(/^claude-/, '') || meta.model || '', steps: info.steps, last: info.last,
+      updatedAt: info.mtime, status: extra.status || subStatus(info, meta.finished ? 'done' : ''), toolUseId: meta.toolUseId || '',
+      background: meta.requestShape === 'background' };
+  };
+  // Helpers started one by one with the Agent tool.
+  const plain = ls(dir).filter(f => /^agent-[\w-]+\.jsonl$/.test(f)).map(f => one(dir, f, {})).filter(Boolean);
+  if (plain.length) runs.push({ id: 'agents', kind: 'agents', name: 'Helpers', agents: plain.sort((x, y) => y.updatedAt - x.updatedAt) });
+  // Workflow runs.
+  const scripts = ls(path.join(base, 'workflows', 'scripts'));
+  for (const wf of ls(path.join(dir, 'workflows'))) {
+    const wd = path.join(dir, 'workflows', wf), journal = new Map(), order = [];
+    let jt = 0;
+    try {
+      jt = fs.statSync(path.join(wd, 'journal.jsonl')).mtimeMs;
+      for (const l of fs.readFileSync(path.join(wd, 'journal.jsonl'), 'utf8').split('\n')) {
+        let o; try { o = JSON.parse(l); } catch { continue; }
+        if (!o.agentId) continue;
+        if (o.type === 'started') { journal.set(o.agentId, { label: o.label, phase: o.phase, status: '' }); order.push(o.agentId); }
+        else if (journal.has(o.agentId)) journal.get(o.agentId).status = o.type === 'failed' ? 'failed' : 'done';
+      }
+    } catch { /* no journal yet */ }
+    const agentsHere = order.map(id => {
+      const j = journal.get(id);
+      const r = fs.existsSync(path.join(wd, `agent-${id}.jsonl`)) ? one(wd, `agent-${id}.jsonl`, { label: j.label, phase: j.phase }) : null;
+      const s = r || { id, label: j.label, phase: j.phase, model: '', steps: 0, last: '', updatedAt: Math.round(jt), status: 'run' };
+      if (j.status) s.status = j.status;
+      return s;
+    });
+    const script = scripts.find(s => s.endsWith(`-${wf}.js`));
+    const name = script ? script.slice(0, -(wf.length + 4)) : wf;
+    const latest = Math.max(jt, ...agentsHere.map(x => x.updatedAt));
+    const running = agentsHere.some(x => x.status === 'run') || Date.now() - jt < 15_000;
+    runs.push({ id: wf, kind: 'workflow', name, updatedAt: Math.round(latest), status: running ? 'run' : agentsHere.some(x => x.status === 'failed') ? 'failed' : 'done', agents: agentsHere });
+  }
+  for (const r of runs) if (!r.updatedAt) r.updatedAt = Math.max(0, ...r.agents.map(x => x.updatedAt));
+  return runs.sort((x, y) => (y.status === 'run') - (x.status === 'run') || y.updatedAt - x.updatedAt);
+}
+// The steps of one helper, shown like an agent's own chat.
+function subagentItems(a, runId, subId) {
+  if (otherTool(a)) return null;
+  const file = sessionFile(a); if (!file || !/^[\w-]+$/.test(subId) || !/^[\w-]+$/.test(runId)) return null;
+  const dir = path.join(path.dirname(file), path.basename(file, '.jsonl'), 'subagents', ...(runId === 'agents' ? [] : ['workflows', runId]));
+  let text; try { text = fs.readFileSync(path.join(dir, `agent-${subId}.jsonl`), 'utf8'); } catch { return null; }
+  const msgs = [];
+  for (const l of text.split('\n')) { if (!l) continue; try { const o = JSON.parse(l); if (o.type === 'user' || o.type === 'assistant') msgs.push(o); } catch { /* half-written line */ } }
+  const items = itemsFromHistory(msgs, a, true);
+  // The first message is the task the helper was given, framed by the harness. Keep only the task.
+  // A workflow helper gets two: the person's request that started the run, then the computed task.
+  for (const it of items) {
+    if (it.k !== 'user') break;
+    it.text = it.text.replace(/^\[Workflow harness[^\]]*\][^\n]*\n/, '').replace(/^\s{2}/gm, '').trim(); it.task = true;
+  }
+  return items;
+}
+
+// Items from another tool's reader get the same extras as Claude Code's: a one-line summary and file previews.
+function finishOther(a, items) {
+  for (const it of items) if (it.k === 'tool') {
+    const input = it.input && typeof it.input === 'object' ? it.input : { command: String(it.input || '') };
+    it.summary = toolSummary(it.name, input, a.cwd); it.files = viewFiles(a, input); it.result = clip(it.result || '');
+  }
+  return items;
+}
+// An agent of another tool that the cockpit just started has no session id yet. Its session is the newest one
+// in its folder that began after its window opened (Hermes: the one carrying its name).
+async function attachOther(a, tool) {
+  if (!a.term || !a.term.openedAt || Date.now() - a.term.openedAt > 30 * 60_000) return;
+  const used = new Set([...agents.values()].map(x => x.sessionId).filter(Boolean));
+  let list; try { list = await tool.sessions(a.cwd, a.term.openedAt - 60_000); } catch { return; }
+  const name = (a.title || a.name).toLowerCase();
+  const s = list.find(x => !used.has(x.sessionId) && x.title.toLowerCase() === name)
+    || list.filter(x => !used.has(x.sessionId) && x.createdAt >= a.term.openedAt - 15_000).sort((x, y) => x.createdAt - y.createdAt)[0];
+  if (!s) return;
+  a.sessionId = s.sessionId; saveRoster(); emitAgent(a);
+}
+async function pollOther(a, tool) {
+  if (!a.sessionId) { await attachOther(a, tool); if (!a.sessionId) return; }
+  const r = rt(a.id), w = r.watch;
+  const stamp = await tool.stamp(a.sessionId);
+  if (stamp == null) return;
+  if (stamp !== w.stamp) {
+    const got = await tool.read(a.sessionId); if (!got) return;
+    w.stamp = stamp; w.mtime = got.mtime; w.info = got.info;
+  }
+  if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
+  applyWatchState(a);
+}
+
 async function pollWatched(a) {
+  const tool = otherTool(a);
+  if (tool) return pollOther(a, tool);
   if (!a.sessionId) return; // started in a terminal, its session file does not exist yet
   const r = rt(a.id), w = r.watch, file = sessionFile(a);
   if (!file) return;
@@ -506,6 +651,10 @@ async function pollWatched(a) {
     if (t.mode) w.mode = t.mode;
   }
   if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
+  applyWatchState(a);
+}
+function applyWatchState(a) {
+  const r = rt(a.id), w = r.watch;
   let s = watchState(w.info, Date.now() - w.mtime);
   if (!s) return;
   if (a.term && a.term.alive === false && (s[0] === 'work' || s[0] === 'need')) s = ['idle', 'Its terminal window is closed.'];
@@ -544,7 +693,7 @@ async function scanProjects() {
       }
       const used = new Set([...agents.values()].map(a => a.sessionId).filter(Boolean));
       for (const a of agents.values()) {
-        if (a.projectId !== p.id || a.mode !== 'watch') continue;
+        if (a.projectId !== p.id || a.mode !== 'watch' || harnessOf(a) !== 'claude') continue;
         const s = newest.get((a.title || a.name).toLowerCase());
         if (!s || s.sessionId === a.sessionId || used.has(s.sessionId)) continue;
         used.add(s.sessionId);
@@ -593,11 +742,18 @@ const termTitle = a => (a.title || a.name).replace(/[^\w .-]/g, '').slice(0, 40)
 const extraArgs = () => { const e = (process.env.COCKPIT_CLAUDE_ARGS || '').trim(); return e ? ' ' + e : ''; };
 
 // What the PowerShell window runs. It travels base64-encoded, so no quoting can break on the way.
+// The program and arguments a window runs: Claude Code, or another tool (harnesses.mjs).
+function agentCommand(a, firstMessage) {
+  const tool = otherTool(a);
+  return tool ? { bin: tool.bin, args: tool.args(a, firstMessage), extra: '' } : { bin: 'claude', args: claudeArgs(a, firstMessage), extra: extraArgs() };
+}
 function terminalScript(a, firstMessage) {
-  return `$Host.UI.RawUI.WindowTitle = ${psQuote(termTitle(a))}; Set-Location -LiteralPath ${psQuote(a.cwd)}; claude ${claudeArgs(a, firstMessage).map(psQuote).join(' ')}${extraArgs()}`;
+  const c = agentCommand(a, firstMessage);
+  return `$Host.UI.RawUI.WindowTitle = ${psQuote(termTitle(a))}; Set-Location -LiteralPath ${psQuote(a.cwd)}; ${c.bin} ${c.args.map(psQuote).join(' ')}${c.extra}`;
 }
 function shellLine(a, firstMessage) {
-  return `cd ${shQuote(a.cwd)} && claude ${claudeArgs(a, firstMessage).map(shQuote).join(' ')}${extraArgs()}`;
+  const c = agentCommand(a, firstMessage);
+  return `cd ${shQuote(a.cwd)} && ${c.bin} ${c.args.map(shQuote).join(' ')}${c.extra}`;
 }
 
 // Opens the window and remembers which process it is, so the cockpit can tell whether it is
@@ -686,7 +842,7 @@ function closeWindow(a) {
 let adoptBusy = false;
 function adoptWindows() {
   if (process.platform !== 'win32' || adoptBusy) return;
-  const need = [...agents.values()].filter(a => (a.mode || 'own') === 'watch' && !(termKnown(a) && a.term.alive !== false));
+  const need = [...agents.values()].filter(a => (a.mode || 'own') === 'watch' && harnessOf(a) === 'claude' && !(termKnown(a) && a.term.alive !== false));
   if (!need.length) return;
   adoptBusy = true;
   const script = `Get-CimInstance Win32_Process -Filter "Name='claude.exe'" | ForEach-Object { $s = 0; try { $s = (Get-Process -Id $_.ProcessId -ErrorAction Stop).StartTime.ToFileTimeUtc() } catch {}; ` +
@@ -909,6 +1065,24 @@ public static class CockpitKeys {
     CloseHandle(h); FreeConsole();
     return ok ? "sent" : "typing failed (" + Marshal.GetLastWin32Error() + ")";
   }
+  // The visible part of the window as text (base64, so line breaks survive the one-line answer), so the
+  // cockpit can show a question that waits in the window.
+  public static string Screen(uint pid) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return "";
+    IntPtr o = CreateFile("CONOUT$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    var all = new System.Text.StringBuilder();
+    if (o != new IntPtr(-1)) {
+      SCREEN_INFO i;
+      if (GetConsoleScreenBufferInfo(o, out i)) for (short y = i.win.T; y <= i.win.B; y++) {
+        var sb = new System.Text.StringBuilder(i.size.X + 1); uint n; COORD c; c.X = 0; c.Y = y;
+        if (ReadConsoleOutputCharacter(o, sb, (uint)i.size.X, c, out n)) all.Append(sb.ToString(0, (int)Math.Min(n, (uint)sb.Length)).TrimEnd()).Append('\\n');
+      }
+      CloseHandle(o);
+    }
+    FreeConsole();
+    return Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(all.ToString()));
+  }
 }`;
 
 // One typing helper keeps running in the background. Starting PowerShell and compiling the helper took
@@ -926,6 +1100,7 @@ while ($null -ne ($l = [Console]::In.ReadLine())) {
     $tp = [uint32]$f[1]; $p = Get-Process -Id $tp -ErrorAction SilentlyContinue; $s = 0
     if ($p) { try { $s = $p.StartTime.ToFileTimeUtc() } catch {} }
     if (-not $p -or "$s" -ne $f[2]) { $r = 'its window is closed' }
+    elseif ($f[3] -eq 'S') { $r = 'SCREEN:' + [CockpitKeys]::Screen($tp) }
     else { $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($f[5])); $r = [CockpitKeys]::Send($tp, $text, $f[3] -eq '1', $f[4] -eq '1') }
   } catch { $r = 'typing into the window failed: ' + $_.Exception.Message }
   [Console]::Out.WriteLine($f[0] + '|' + $r); [Console]::Out.Flush()
@@ -970,7 +1145,7 @@ function typeOne(t, line, enter, check) {
     return new Promise(done => {
       const timer = setTimeout(() => { if (typer.waiting.delete(id)) { done('typing into the window failed: no answer from the helper'); if (typer.proc) typer.proc.kill(); } }, 20000 + line.length * 5);
       typer.waiting.set(id, r => { clearTimeout(timer); done(r); });
-      typer.proc.stdin.write(`${id}|${Number(t.pid)}|${String(t.started).replace(/\D/g, '')}|${enter ? 1 : 0}|${check ? 1 : 0}|${Buffer.from(line, 'utf8').toString('base64')}\n`);
+      typer.proc.stdin.write(`${id}|${Number(t.pid)}|${String(t.started).replace(/\D/g, '')}|${enter === 'S' ? 'S' : enter ? 1 : 0}|${check ? 1 : 0}|${Buffer.from(line, 'utf8').toString('base64')}\n`);
     });
   };
   const p = typer.chain.then(run, run);
@@ -987,6 +1162,26 @@ async function typeIntoWindows(targets, line, enter, check) {
   const out = new Map();
   for (const t of targets) out.set(t.id, await typeOne(t, line, enter, check));
   return out;
+}
+
+// The text a window shows now (Windows, a window the cockpit can type into), or '' when it cannot be read.
+async function windowScreen(a) {
+  if (process.platform !== 'win32' || !termKnown(a) || a.term.alive === false || a.term.tmux) return '';
+  const r = await typeOne({ pid: a.term.pid, started: a.term.started }, '', 'S', false);
+  if (!r.startsWith('SCREEN:')) return '';
+  return Buffer.from(r.slice(7), 'base64').toString('utf8').replace(/\n{3,}/g, '\n\n').trim();
+}
+// A question in a window, read from its screen: the lines from the question's title to the bottom, and the
+// numbered answers it offers.
+function questionOf(screen) {
+  const lines = screen.split('\n');
+  let end = lines.length; while (end && !lines[end - 1].trim()) end--;
+  const tail = lines.slice(Math.max(0, end - 18), end);
+  const options = [];
+  for (const l of tail) { const m = /^\s*(?:[(\[][^)\]]{0,2}[)\]]|[●○◉◯*>❯›-])?\s*(\d{1,2})[.)]\s+(.{1,80})$/.exec(l); if (m) options.push({ key: m[1], label: m[2].trim() }); }
+  // The same test as the typing helper: a key hint in the last few lines means a question waits there.
+  const asking = tail.filter(l => l.trim()).slice(-4).some(l => /Enter to confirm|Esc to cancel/.test(l));
+  return { text: tail.join('\n').replace(/^\n+/, ''), options, asking };
 }
 
 const ESC = String.fromCharCode(27);
@@ -1079,6 +1274,11 @@ const routes = {
     const dir = proj ? proj.cwd : expandHome(url.searchParams.get('dir') || '');
     const limit = Math.min(Number(url.searchParams.get('limit') || 60), 300);
     const inRoster = new Map([...agents.values()].filter(a => a.sessionId).map(a => [a.sessionId, a.name]));
+    const tool = HARNESSES[url.searchParams.get('harness') || ''];
+    if (tool) {
+      let list = []; try { list = await tool.sessions(dir || null); } catch (e) { return json(res, 200, { sessions: [], error: `${tool.label}: ${e.message}` }); }
+      return json(res, 200, { sessions: list.slice(0, limit).map(s => ({ sessionId: s.sessionId, title: s.title, named: false, firstPrompt: s.title, cwd: s.cwd, cwdShort: shortPath(s.cwd), gitBranch: '', lastModified: s.lastModified, agent: inRoster.get(s.sessionId) || null, harness: tool.id })) });
+    }
     const list = await listSessions(dir ? { dir, limit } : { limit });
     json(res, 200, { sessions: list.map(s => ({
       sessionId: s.sessionId, title: s.customTitle || s.summary || s.firstPrompt || '(untitled)', named: !!s.customTitle,
@@ -1137,7 +1337,7 @@ const routes = {
       id: crypto.randomUUID(), projectId: proj.id, name: uniqueName(b.name, proj.id), cwd, model: String(b.model || '').trim(),
       permissionMode: PERMISSION_MODES.includes(b.permissionMode) ? b.permissionMode : (proj.permissionMode || 'default'),
       sessionId: b.sessionId || null, createdAt: Date.now(), updatedAt: Date.now(), cost: 0,
-      mode: 'watch', title: String(b.title || '').trim(),
+      mode: 'watch', title: String(b.title || '').trim(), ...(HARNESSES[b.harness] ? { harness: b.harness } : {}),
       last: b.sessionId ? 'Open terminal to continue it in its own window.' : 'Starting in a terminal window.',
     };
     if (a.title && proj.ignored) proj.ignored = proj.ignored.filter(t => t.toLowerCase() !== a.title.toLowerCase());
@@ -1164,6 +1364,15 @@ const agentRoutes = {
     await ensureHistory(a);
     json(res, 200, { items: r.items, commands: r.commands.length ? r.commands : (a.commands || []) });
   },
+  // Helpers this agent started. With ?run=&sub= it gives that one helper's steps.
+  'GET subagents': async (a, req, res, url) => {
+    const run = url.searchParams.get('run'), sub = url.searchParams.get('sub');
+    if (run && sub) {
+      const items = subagentItems(a, run, sub);
+      return items ? json(res, 200, { items }) : json(res, 404, { error: 'That helper\'s file is gone.' });
+    }
+    json(res, 200, { runs: listSubagents(a) });
+  },
   'POST message': async (a, req, res) => {
     const b = await readBody(req);
     const text = String(b.text || '').trim();
@@ -1179,7 +1388,11 @@ const agentRoutes = {
       line = (line ? line + ' ' : '') + paths.map(f => `[Look at this image: ${f}]`).join(' ');
     }
     const out = (await typeToAgents([a], line, true, b.force !== true)).get(a.id);
-    if (out === QUESTION) return json(res, 409, { error: `${a.name}: ${QUESTION_WHY}.`, canForce: true });
+    if (out === QUESTION) {
+      // Show the question in the cockpit, so it can be answered here and the message sent after it.
+      let question = null; try { const s = await windowScreen(a); if (s) question = questionOf(s); } catch { /* fall back to the plain refusal */ }
+      return json(res, 409, { error: `${a.name}: ${QUESTION_WHY}.`, canForce: true, question });
+    }
     if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
     nudgeWatch(a);
     json(res, 200, { ok: true, typed: true });
@@ -1190,6 +1403,24 @@ const agentRoutes = {
     await closeWindow(a);
     rt(a.id).status = 'idle'; touch(a, 'Stopped. Its terminal window was closed.');
     json(res, 200, { ok: true });
+  },
+  // Answers a question that waits in the window: an answer with Enter, Enter alone, or Esc.
+  'POST answer': async (a, req, res) => {
+    const b = await readBody(req);
+    const block = typeBlock(a, true);
+    if (block) return json(res, 409, { error: `${a.name}: ${block.why}.` });
+    const key = String(b.key || '');
+    const out = key === 'esc' ? (await typeToAgents([a], ESC, false)).get(a.id)
+      : key === 'enter' ? (await typeIntoWindows([{ id: a.id, pid: a.term.pid, started: a.term.started, openedAt: 0 }], '\r', false, false)).get(a.id)
+      : (await typeToAgents([a], String(b.text || '').slice(0, 200), true, false)).get(a.id);
+    if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
+    nudgeWatch(a);
+    json(res, 200, { ok: true });
+  },
+  // What the window shows now, and the question in it if there is one.
+  'GET screen': async (a, req, res) => {
+    const s = await windowScreen(a);
+    json(res, 200, { screen: s, question: s ? questionOf(s) : null });
   },
   // Esc in the agent's window: Claude Code stops what it is doing and waits for you.
   'POST interrupt': async (a, req, res) => {

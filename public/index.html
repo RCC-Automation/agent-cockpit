@@ -175,12 +175,31 @@ details.steps > summary b{color:var(--ink);font-weight:600;flex:none}
 details.steps > summary .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 details.steps > summary .t code{font-family:var(--mono);font-size:.85em;color:var(--ink-2)}
 .wf{align-self:flex-start;min-width:min(320px,100%);max-width:100%;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);padding:10px 14px}
-.wf > summary{cursor:pointer;list-style:none;display:grid;grid-template-columns:1fr auto;gap:4px 12px}
-.wf > summary::-webkit-details-marker{display:none}
+.wf summary{cursor:pointer;list-style:none;display:grid;grid-template-columns:1fr auto;gap:4px 12px}
+.wf summary::-webkit-details-marker{display:none}
 .wf .tt{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wf .chev{color:var(--ink-3)}
 .wf .sub{grid-column:1/-1;color:var(--ink-3);font-size:.85rem;display:flex;gap:14px}
 .wf .sub .run{color:var(--work)} .wf .sub .err{color:var(--fail)}
+.wf-helpers{display:flex;flex-direction:column;gap:2px;margin-top:8px}
+.wf-helpers:empty{display:none}
+.sub-row{display:grid;grid-template-columns:auto minmax(90px,max-content) 1fr auto;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:none;padding:6px 8px;border-radius:8px;cursor:pointer;color:var(--ink-2);font:inherit;font-size:.82rem}
+.sub-row:hover{background:color-mix(in srgb,var(--ink) 6%,transparent)}
+.sub-row .nm{display:flex;flex-direction:column;min-width:0}
+.sub-row .nm b{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub-row .nm small{color:var(--ink-3);font-size:.72rem}
+.sub-row .ls{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:.72rem}
+.sub-row .mdl{color:var(--ink-3);font-size:.72rem;white-space:nowrap}
+.s-done{--c:var(--done)}
+.tool-pill{--c:var(--accent)}
+.tool-tabs{gap:6px}
+.subs-busy{display:inline-flex;align-items:center;gap:6px;color:var(--work)}
+.subs-body{flex:1;min-height:0;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:14px}
+.subs-run{display:flex;flex-direction:column;gap:2px}
+.subs-title{display:flex;align-items:center;gap:10px;padding:0 8px 4px}
+.preview.subs .thread{flex:1;min-height:0}
+.msg.user.task{max-height:180px;overflow:auto;font-size:.8rem;white-space:pre-wrap}
+@media (max-width:760px){.sub-row{grid-template-columns:auto 1fr auto}.sub-row .ls{grid-column:2/-1}}
 .wf pre{margin:8px 0 0;font-size:.75rem;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;color:var(--ink-2)}
 details.steps > summary .r{flex:none;font-weight:600}
 details.steps .r.err{color:var(--fail)} details.steps .r.run{color:var(--work)}
@@ -205,6 +224,10 @@ details.peer[open] summary .t{display:none}
 .typing{display:flex;align-items:center;gap:8px;color:var(--work);font-size:.8rem;font-weight:500;padding:0 16px 8px}
 
 .composer{border-top:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:8px;position:relative}
+.winq{border-top:1px solid var(--line);background:color-mix(in srgb,var(--need) 8%,var(--surface));padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+.winq-head{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;color:var(--need)}
+.winq pre{margin:0;font-size:.75rem;max-height:220px;overflow:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;white-space:pre-wrap}
+.winq input{border:1px solid var(--line);border-radius:7px;padding:4px 8px;background:var(--surface);min-width:160px}
 .composer .line{display:flex;gap:8px;align-items:flex-end}
 .composer textarea{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:9px 10px;min-height:40px;max-height:220px}
 .composer.drag textarea{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
@@ -292,6 +315,7 @@ a.artlink svg{width:14px;height:14px;flex:none}
 const ST = { need: 'Needs you', review: 'Ready to review', work: 'Working', failed: 'Failed', idle: 'Idle' };
 const ORDER = ['need', 'review', 'work', 'failed', 'idle'];
 const MODES = { default: 'Ask before edits and commands', acceptEdits: 'Accept edits, ask for commands', auto: 'Auto: Claude Code judges each action itself', plan: 'Plan first, change nothing', dontAsk: 'Never ask: refuse what is not allowed in advance', bypassPermissions: 'Allow everything, never ask' };
+const TOOLS = { claude: 'Claude Code', codex: 'Codex', opencode: 'opencode', hermes: 'Hermes' };
 const ALLOW_ALL_WARNING = 'With "Allow everything" an agent runs any command and changes or deletes any file without asking you first.\n\nWindows the cockpit opens start without Claude Code\'s own warning screen, because you confirm it here.';
 const KCOL = ['var(--ink-2)', 'var(--review)', 'var(--work)', 'var(--need)', 'var(--done)', 'var(--ink-3)', 'var(--fail)'];
 
@@ -411,7 +435,7 @@ function renderRail() {
     rail.append(h('div', { class: 'grp', text: `${ST[s]} · ${list.length}` }));
     for (const a of list) {
       rail.append(h('button', { class: 'row s-' + a.status, type: 'button', 'aria-current': a.id === S.cur && S.view === 'chat' ? 'true' : null, onclick: () => openAgent(a.id) },
-        h('span', { class: 'dot' }), h('span', { class: 'cs', text: a.name }), h('span', { class: 'ago', text: (a.mode === 'watch' ? 'terminal · ' : '') + ago(a.updatedAt) }),
+        h('span', { class: 'dot' }), h('span', { class: 'cs', text: a.name }), h('span', { class: 'ago', text: (a.harness && a.harness !== 'claude' ? a.harnessLabel + ' · ' : a.mode === 'watch' ? 'terminal · ' : '') + ago(a.updatedAt) }),
         h('span', { class: 'last', text: plain(a.last) }), a.ctx != null ? meter(a.ctx) : null));
     }
   }
@@ -434,6 +458,7 @@ function loadItems(id) {
 }
 function renderMain() {
   if (S.micStop) S.micStop();
+  if (els.question && els.question.close) els.question.close(); // a message waiting on a question goes back to the box
   const main = $('main'); main.textContent = ''; els = {};
   if (S.view === 'project' || !S.projects.length) return main.append(viewProject());
   if (S.view === 'new') return main.append(viewNew());
@@ -447,8 +472,11 @@ function renderMain() {
   els.thread = h('div', { class: 'thread' });
   els.typing = h('div', { class: 'typing s-work', hidden: true }, h('span', { class: 'dot' }), h('span'));
   els.preview = h('aside', { class: 'preview', hidden: true, 'aria-label': 'Preview' });
-  main.append(els.head, els.ctxpanel, els.thread, els.typing, a.mode === 'watch' && !a.talk ? watchBar(a) : composer(a), els.preview);
+  els.subs = h('aside', { class: 'preview subs', hidden: true, 'aria-label': 'Helpers' });
+  main.append(els.head, els.ctxpanel, els.thread, els.typing, a.mode === 'watch' && !a.talk ? watchBar(a) : composer(a), els.preview, els.subs);
   paintPreview();
+  if (S.subs && S.subs.agentId !== a.id) S.subView = null;
+  paintSubs(); pollSubs();
   renderHead();
   const thread = els.thread;
   pingView();
@@ -466,7 +494,8 @@ function renderHead() {
   // Model switch: types "/model <name>" into the agent's window. Only while the cockpit can type into it.
   const MODEL_CHOICES = [['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']];
   const cur = a.model || '';
-  const model = watch && a.talk ? h('select', { title: 'Switch the model. Types /model <name> into its terminal window. This also changes the default model for your new Claude Code sessions.', 'aria-label': 'Model', onchange: async e => {
+  const claude = (a.harness || 'claude') === 'claude';
+  const model = watch && a.talk && claude ? h('select', { title: 'Switch the model. Types /model <name> into its terminal window. This also changes the default model for your new Claude Code sessions.', 'aria-label': 'Model', onchange: async e => {
       let v = e.target.value;
       if (v === 'custom') { v = (prompt('Model name (as you would type it after /model)', cur) || '').trim(); if (!v) { e.target.value = cur; return; } }
       if (!v || v === cur) { e.target.value = cur; return; }
@@ -486,8 +515,10 @@ function renderHead() {
     h('span', { class: 'meta', text: [sub, watch ? null : (a.modelResolved || a.model || 'default model'), a.login && !a.login.api ? a.login.label : null, a.cost ? '$' + a.cost.toFixed(2) : null].filter(Boolean).join(' · '), title: a.cwd }),
     a.login && a.login.api ? h('span', { class: 'pill s-failed', text: a.login.label, title: 'This agent is not using your Claude subscription' }) : null,
     watch ? h('span', { class: 'pill s-idle', text: a.window === 'closed' ? 'terminal window closed' : a.adopted ? 'runs in a window you opened' : a.window === 'open' ? 'runs in its terminal window' : 'runs in a terminal', title: a.adopted ? 'You opened this window yourself. The cockpit found it, can type into it, and never closes it' : 'The agent lives in a terminal window' }) : null,
+    claude ? null : h('span', { class: 'pill tool-pill', text: a.harnessLabel, title: `This agent runs in ${a.harnessLabel}, not Claude Code` }),
+    subsButton(a),
     model,
-    mode,
+    claude ? mode : null,
     watch && a.talk && a.status === 'work' ? h('button', { class: 'btn sm', type: 'button', text: 'Interrupt', title: 'Press Esc in its terminal window: it stops what it is doing and waits for you', onclick: () => api('POST', `/api/agents/${a.id}/interrupt`).catch(x => toast(x.message)) }) : null,
     watch && a.window === 'open' && !a.adopted ? h('button', { class: 'btn sm danger', type: 'button', text: 'Close window', title: 'Close its terminal window and stop the agent', onclick: () => stopTerm(a) }) : null,
     h('button', { class: 'btn sm', type: 'button', text: S.detail ? 'Group steps' : 'Show all steps', title: 'Fold commands, file reads and other tool calls into one line, or show each of them', onclick: () => { S.detail = !S.detail; store.set('cockpit.detail', S.detail ? '1' : ''); renderMain(); } }),
@@ -683,11 +714,93 @@ function refreshGroup(g) {
 function wfCard(it) {
   const i = it.input || {};
   const name = (typeof i.script === 'string' && (/name:\s*['"`]([^'"`]+)/.exec(i.script) || [])[1]) || i.name
-    || (typeof i.scriptPath === 'string' ? i.scriptPath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') : '') || 'Workflow';
-  const state = it.status === 'run' ? h('span', { class: 'run', text: 'running' }) : it.status === 'err' ? h('span', { class: 'err', text: 'failed' }) : h('span', { text: 'started' });
-  return h('details', { class: 'wf' },
-    h('summary', null, h('span', { class: 'tt', text: name }), h('span', { class: 'chev', text: '›' }), h('span', { class: 'sub' }, h('span', { text: 'Workflow' }), state)),
-    it.result ? h('pre', { text: it.result }) : null);
+    || (typeof i.scriptPath === 'string' ? i.scriptPath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '').replace(/-wf_[\w-]+$/, '') : '') || 'Workflow';
+  const runId = (/Run ID:\s*(wf_[\w-]+)/.exec(it.result || '') || [])[1] || (/(wf_[\w-]+)/.exec(String(i.resumeFromRunId || i.scriptPath || '')) || [])[1] || '';
+  const state = it.status === 'run' ? h('span', { class: 'run', text: 'running' }) : it.status === 'err' ? h('span', { class: 'err', text: 'failed' }) : h('span', { class: 'st', text: 'started' });
+  // The helpers stay in view; the tool's own answer folds away under the title.
+  const card = h('div', { class: 'wf', 'data-run': runId },
+    h('details', null,
+      h('summary', null, h('span', { class: 'tt', text: name }), h('span', { class: 'chev', text: '›' }), h('span', { class: 'sub' }, h('span', { text: 'Workflow' }), state)),
+      it.result ? h('pre', { text: it.result }) : null),
+    h('div', { class: 'wf-helpers' }));
+  if (runId) paintWfCard(card);
+  return card;
+}
+
+// ───────── helpers (subagents and workflow agents) an agent started ─────────
+// The server reads their files. The page asks every few seconds while a chat is open.
+const SUB_WORD = { run: 'working', done: 'done', failed: 'failed', stopped: 'stopped' };
+const SUB_CLASS = { run: 's-work', done: 's-done', failed: 's-failed', stopped: 's-idle' };
+function subsFor(id) { return S.subs && S.subs.agentId === id ? S.subs.runs : []; }
+function subRow(a, run, x) {
+  return h('button', { class: 'sub-row ' + SUB_CLASS[x.status], type: 'button', title: 'See what this helper does', onclick: e => { e.preventDefault(); e.stopPropagation(); openSub(a, run.id, x.id); } },
+    h('span', { class: 'dot' }),
+    h('span', { class: 'nm' }, h('b', { text: x.label }), x.phase && x.phase !== x.label ? h('small', { text: x.phase }) : null),
+    h('span', { class: 'ls', text: x.status === 'run' && x.last ? x.last : `${SUB_WORD[x.status]}${x.steps ? ` · ${x.steps} step${x.steps === 1 ? '' : 's'}` : ''}` }),
+    h('span', { class: 'mdl', text: [x.model, x.status === 'run' && x.steps ? `${x.steps} steps` : ''].filter(Boolean).join(' · ') }));
+}
+function paintWfCard(card) {
+  const a = curAgent(); if (!a) return;
+  const run = subsFor(a.id).find(r => r.id === card.dataset.run);
+  const box = card.querySelector('.wf-helpers'); if (!box || !run) return;
+  box.replaceChildren(...run.agents.map(x => subRow(a, run, x)));
+  const st = card.querySelector('.sub > span:last-child');
+  if (st) { st.className = run.status === 'run' ? 'run' : run.status === 'failed' ? 'err' : 'st'; st.textContent = run.status === 'run' ? `running · ${run.agents.filter(x => x.status === 'run').length} of ${run.agents.length} helpers working` : run.status === 'failed' ? 'failed' : `done · ${run.agents.length} helpers`; }
+}
+function subsButton(a) {
+  const runs = subsFor(a.id); if (!runs.length) return null;
+  const busy = runs.reduce((n, r) => n + r.agents.filter(x => x.status === 'run').length, 0);
+  return h('button', { class: 'btn sm' + (busy ? ' s-work subs-busy' : ''), type: 'button', title: 'Helpers this agent started: subagents and workflows. See what each one does.', onclick: () => { S.subView = S.subView ? null : { list: true }; paintSubs(); } },
+    busy ? h('span', { class: 'dot' }) : null, busy ? `${busy} helper${busy === 1 ? '' : 's'} working` : 'Helpers');
+}
+function openSub(a, run, sub) { S.subView = { run, sub }; S.subItems = null; paintSubs(); loadSub(a); }
+async function loadSub(a) {
+  const v = S.subView; if (!v || !v.sub) return;
+  try {
+    const d = await api('GET', `/api/agents/${a.id}/subagents?run=${encodeURIComponent(v.run)}&sub=${encodeURIComponent(v.sub)}`);
+    if (S.subView === v) { S.subItems = d.items; paintSubs(); }
+  } catch (e) { if (S.subView === v) { S.subItems = []; S.subError = e.message; paintSubs(); } }
+}
+async function pollSubs() {
+  const a = curAgent();
+  if (!a || a.mode !== 'watch' || S.view !== 'chat' || document.hidden) return;
+  let d; try { d = await api('GET', `/api/agents/${a.id}/subagents`); } catch { return; }
+  if (curAgent() !== a) return;
+  const before = JSON.stringify(subsFor(a.id));
+  S.subs = { agentId: a.id, runs: d.runs || [] };
+  if (JSON.stringify(S.subs.runs) === before) return;
+  renderHead();
+  if (els.thread) for (const c of els.thread.querySelectorAll('.wf[data-run]')) paintWfCard(c);
+  if (S.subView && S.subView.list) paintSubs();
+  else if (S.subView) loadSub(a);
+}
+function paintSubs() {
+  const pv = els.subs, a = curAgent(); if (!pv || !a) return;
+  const v = S.subView; pv.hidden = !v;
+  if (!v) { pv.textContent = ''; return; }
+  const close = h('button', { class: 'btn sm', type: 'button', text: 'Close', onclick: () => { S.subView = null; paintSubs(); } });
+  const runs = subsFor(a.id);
+  if (v.list) {
+    pv.replaceChildren(h('div', { class: 'pv-head' }, h('b', { text: `Helpers of ${a.name}` }), close),
+      h('div', { class: 'subs-body' }, runs.length ? runs.map(run => h('section', { class: 'subs-run' },
+        h('div', { class: 'subs-title' }, h('b', { text: run.name }), h('span', { class: 'pill ' + SUB_CLASS[run.status], text: run.kind === 'workflow' ? `workflow · ${SUB_WORD[run.status]}` : `${run.agents.length} subagent${run.agents.length === 1 ? '' : 's'}` })),
+        ...run.agents.map(x => subRow(a, run, x)))) : h('div', { class: 'note', text: 'This agent has not started any helpers.' })));
+    return;
+  }
+  const run = runs.find(r => r.id === v.run), x = run && run.agents.find(y => y.id === v.sub);
+  const keep = pv.querySelector('.thread'), stick = !keep || keep.scrollHeight - keep.scrollTop - keep.clientHeight < 140, top = keep ? keep.scrollTop : 0;
+  const thread = h('div', { class: 'thread' });
+  const open = new Set(keep ? [...keep.querySelectorAll('details[open]')].map(d => d.dataset.id || d.querySelector('[data-id]')?.dataset.id).filter(Boolean) : []);
+  if (!S.subItems) thread.append(h('div', { class: 'note', text: 'Loading…' }));
+  else if (!S.subItems.length) thread.append(h('div', { class: 'note', text: S.subError || 'No steps yet.' }));
+  else for (const it of S.subItems) { const n = renderItem(it, a); if (it.task) n.classList.add('task'); place(thread, n, it); }
+  for (const d of thread.querySelectorAll('details')) if (open.has(d.dataset.id || d.querySelector('[data-id]')?.dataset.id)) d.open = true;
+  pv.replaceChildren(h('div', { class: 'pv-head' },
+      h('button', { class: 'btn sm', type: 'button', text: '‹ All helpers', onclick: () => { S.subView = { list: true }; paintSubs(); } }),
+      h('b', { text: x ? `${x.label}${x.phase && x.phase !== x.label ? ' · ' + x.phase : ''}` : 'Helper' }),
+      x ? h('span', { class: 'pill ' + SUB_CLASS[x.status], text: SUB_WORD[x.status] }) : null, close),
+    thread);
+  thread.scrollTop = stick ? thread.scrollHeight : top;
 }
 function place(thread, node, it) {
   if (S.detail || it.k !== 'tool' || isShowcase(it)) { thread.append(node); return; }
@@ -833,9 +946,52 @@ async function send(a, text, images, force) {
     await api('POST', `/api/agents/${a.id}/message`, { text, images: images.map(i => ({ mediaType: i.mediaType, data: i.data })), force: !!force });
     return true;
   } catch (e) {
+    // A question waits in the agent's window. Show it here; once it is answered, the message goes out.
+    if (e.data && e.data.question && !force) return askWindow(a, e.data.question, text, images);
     if (e.data && e.data.canForce && !force && confirm(`${e.message}\n\nType it into the window anyway?`)) return send(a, text, images, true);
     toast(e.message); return false;
   }
+}
+// A card above the message box with the question from the window and its answers as buttons. Resolves to
+// true when the waiting message was sent after the answer, false when the person chose not to send it.
+function askWindow(a, q, text, images) {
+  return new Promise(resolve => {
+    if (els.question) els.question.remove();
+    const done = ok => { card.remove(); if (els.question === card) els.question = null; if (!ok && text && !S.drafts.get(a.id)) S.drafts.set(a.id, text); resolve(ok); };
+    let tries = 0;
+    const after = async keyBody => {
+      for (const b of card.querySelectorAll('button,input')) b.disabled = true;
+      try { await api('POST', `/api/agents/${a.id}/answer`, keyBody); } catch (x) { toast(x.message); for (const b of card.querySelectorAll('button,input')) b.disabled = false; return; }
+      if (!text && !images.length) return done(true);
+      // Give the window a moment to leave the question, then send the waiting message.
+      await new Promise(r => setTimeout(r, 1500));
+      try { await api('POST', `/api/agents/${a.id}/message`, { text, images: images.map(i => ({ mediaType: i.mediaType, data: i.data })) }); return done(true); }
+      catch (x) {
+        if (x.data && x.data.question && ++tries < 5) { paintQ(x.data.question); return; }
+        toast(x.message); return done(false);
+      }
+    };
+    const own = h('input', { type: 'text', placeholder: 'Or type an answer', 'aria-label': 'Your answer for the window', onkeydown: e => { if (e.key === 'Enter' && own.value.trim()) after({ text: own.value.trim() }); } });
+    const card = h('div', { class: 'winq', role: 'dialog', 'aria-label': `${a.name}'s window asks` });
+    const paintQ = qq => {
+      card.replaceChildren(
+        h('div', { class: 'winq-head' }, h('b', { text: `${a.name}'s window asks you something` }), h('span', { class: 'hint', text: text ? 'Your message is sent right after you answer.' : '' })),
+        h('pre', { text: qq.text }),
+        h('div', { class: 'acts' },
+          ...qq.options.map(o => h('button', { class: 'btn sm', type: 'button', text: `${o.key}. ${o.label}`, onclick: () => after({ text: o.key }) })),
+          h('button', { class: 'btn sm', type: 'button', text: 'Enter', title: 'Press Enter in the window: takes the answer that is preselected there', onclick: () => after({ key: 'enter' }) }),
+          own,
+          h('button', { class: 'btn sm', type: 'button', text: 'Esc', title: 'Press Esc in the window: usually cancels the question', onclick: () => after({ key: 'esc' }) }),
+          h('button', { class: 'btn sm', type: 'button', text: text ? 'Keep my message' : 'Hide', title: text ? 'Close this and put your message back in the box' : 'Hide this card. It comes back while the question is still in the window.', onclick: () => done(false) })));
+      for (const b of card.querySelectorAll('button,input')) b.disabled = false;
+    };
+    paintQ(q);
+    card.dataset.waiting = text || images.length ? '1' : '';
+    card.close = () => done(false);
+    els.question = card;
+    const box = document.querySelector('.main .composer') || els.typing;
+    if (box && box.parentNode) box.parentNode.insertBefore(card, box); else document.body.append(card);
+  });
 }
 function fileToImage(file) {
   return new Promise((resolve, reject) => {
@@ -913,31 +1069,42 @@ function viewNew() {
   model.addEventListener('change', () => { custom.hidden = model.value !== 'custom'; });
   const mode = h('select', { id: 'new-mode' }, Object.entries(MODES).map(([k, v]) => h('option', { value: k, text: v, selected: (p.permissionMode || 'default') === k })));
   const first = h('textarea', { id: 'new-first', rows: 3, placeholder: 'Optional. What should it start with?' });
+  const tool = h('select', { id: 'new-tool' }, Object.entries(TOOLS).map(([k, v]) => h('option', { value: k, text: v })));
+  const modeLabel = h('label', null, 'Permissions', mode);
+  tool.addEventListener('change', () => {
+    const claude = tool.value === 'claude';
+    modeLabel.hidden = !claude;
+    for (const o of model.options) o.hidden = !claude && !['', 'custom'].includes(o.value);
+    if (!claude && !['', 'custom'].includes(model.value)) { model.value = ''; custom.hidden = true; }
+    model.options[0].text = claude ? 'Default (as in Claude Code)' : `Default (as in ${TOOLS[tool.value]})`;
+  });
   const win = S.platform === 'win32' ? 'PowerShell window' : 'terminal window';
   const form = h('form', { class: 'form', onsubmit: async e => {
     e.preventDefault(); err.textContent = '';
     try {
-      const d = await api('POST', '/api/agents', { projectId: p.id, name: name.value, model: model.value === 'custom' ? custom.value : model.value, permissionMode: mode.value, firstMessage: first.value });
+      const d = await api('POST', '/api/agents', { projectId: p.id, name: name.value, harness: tool.value, model: model.value === 'custom' ? custom.value : model.value, permissionMode: mode.value, firstMessage: first.value });
       if (d.hint) toast(d.hint);
       S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar();
     } catch (x) { err.textContent = x.message; }
   } },
     h('label', { class: 'wide' }, 'Project', h('span', { class: 'fixed', text: `${p.name}  ·  ${p.cwd}` })),
-    h('label', null, 'Name', name), h('label', null, 'Model', model, custom), h('label', null, 'Permissions', mode),
+    h('label', null, 'Name', name), h('label', null, 'Tool', tool), h('label', null, 'Model', model, custom), modeLabel,
     h('label', { class: 'wide' }, 'Where it runs', h('span', { class: 'fixed', text: `In its own ${win}. You see it there and talk to it here or there. It keeps running without the cockpit.` })),
     h('label', { class: 'wide' }, 'First message', first), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Launch' }), h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') })));
   setTimeout(() => name.focus(), 0);
-  return h('div', { class: 'pane' }, h('h2', { text: 'New agent' }), h('span', { class: 'sub', text: 'The agent starts in the project folder with your normal Claude Code settings, skills and plugins. In a terminal window it is independent of the cockpit.' }), form);
+  return h('div', { class: 'pane' }, h('h2', { text: 'New agent' }), h('span', { class: 'sub', text: 'The agent starts in the project folder with the normal settings, skills and plugins of its tool. In a terminal window it is independent of the cockpit.' }), form);
 }
 function viewResume() {
   const p = curProject(); const list = h('div', { class: 'list' }, h('span', { class: 'sub', text: 'Loading sessions…' }));
   const find = h('input', { class: 'find', type: 'text', id: 'resume-find', placeholder: 'Filter by title or first message', 'aria-label': 'Filter sessions', style: 'flex:1 1 260px;max-width:620px' });
   let sessions = [];
+  const tool = S.resumeTool || 'claude';
+  const tabs = h('div', { class: 'acts tool-tabs', role: 'tablist' }, Object.entries(TOOLS).map(([k, v]) => h('button', { class: 'btn sm' + (k === tool ? ' primary' : ''), type: 'button', role: 'tab', 'aria-selected': String(k === tool), text: v, onclick: () => { S.resumeTool = k; renderMain(); } })));
   const paint = () => {
     list.textContent = ''; const q = find.value.toLowerCase();
     const hit = sessions.filter(s => !q || (s.title + ' ' + s.firstPrompt).toLowerCase().includes(q));
-    if (!hit.length) return list.append(h('span', { class: 'sub', text: sessions.length ? 'No session matches.' : 'No previous Claude Code sessions were found for this folder.' }));
+    if (!hit.length) return list.append(h('span', { class: 'sub', text: sessions.length ? 'No session matches.' : `No previous ${TOOLS[tool]} sessions were found for this folder.` }));
     for (const s of hit) {
       list.append(h('div', { class: 'it' },
         h('div', { class: 'what' }, h('b', { text: s.title }), h('span', { text: [s.firstPrompt && s.firstPrompt !== s.title ? s.firstPrompt : null, s.gitBranch ? 'branch ' + s.gitBranch : null, s.cwd !== p.cwd ? s.cwdShort : null].filter(Boolean).join(' · ') || s.sessionId })),
@@ -947,17 +1114,18 @@ function viewResume() {
           : h('span', { class: 'acts' }, h('button', { class: 'btn sm primary', type: 'button', text: 'Add to roster',
               title: 'Show this session live in the roster. Open terminal then gives it its own window.', onclick: async ev => {
               ev.target.disabled = true;
-              try { const d = await api('POST', '/api/agents', { projectId: p.id, sessionId: s.sessionId, cwd: s.cwd, title: s.named ? s.title : '', name: s.named ? s.title : s.title.replace(/\s+/g, ' ').slice(0, 28) }); S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar(); }
+              try { const d = await api('POST', '/api/agents', { projectId: p.id, sessionId: s.sessionId, cwd: s.cwd, harness: tool, title: s.named ? s.title : '', name: s.named ? s.title : s.title.replace(/\s+/g, ' ').slice(0, 28) }); S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar(); }
               catch (x) { toast(x.message); ev.target.disabled = false; }
             } }))));
     }
   };
   find.addEventListener('input', paint);
-  api('GET', `/api/sessions?projectId=${p.id}&limit=200`).then(d => { sessions = d.sessions; paint(); }).catch(x => { list.textContent = ''; list.append(h('span', { class: 'err', text: x.message })); });
+  api('GET', `/api/sessions?projectId=${p.id}&limit=200${tool === 'claude' ? '' : '&harness=' + tool}`).then(d => { sessions = d.sessions; paint(); }).catch(x => { list.textContent = ''; list.append(h('span', { class: 'err', text: x.message })); });
   return h('div', { class: 'pane' }, h('h2', { text: 'Sessions in this folder' }),
-    h('span', { class: 'sub', text: `Claude Code sessions recorded in ${p.cwd}. Add to roster shows a session live. Then click Open terminal to continue it in its own window; close any window that still runs it first, because a session should be driven from one place at a time.` }),
+    tabs,
+    h('span', { class: 'sub', text: `${TOOLS[tool]} sessions recorded in ${p.cwd}. Add to roster shows a session live. Then click Open terminal to continue it in its own window; close any window that still runs it first, because a session should be driven from one place at a time.` }),
     h('div', { class: 'acts' }, find,
-      h('button', { class: 'btn', type: 'button', text: 'Add all named sessions', title: 'Shows every named session of the last days in the roster. Nothing is started.', onclick: async () => {
+      tool !== 'claude' ? null : h('button', { class: 'btn', type: 'button', text: 'Add all named sessions', title: 'Shows every named session of the last days in the roster. Nothing is started.', onclick: async () => {
         try { const d = await api('POST', `/api/projects/${p.id}/import`); await refresh(); toast(d.imported ? `${d.imported} agent${d.imported === 1 ? '' : 's'} added.` : 'No new named sessions in this folder.'); if (d.imported) selectProject(p.id, 'chat'); }
         catch (x) { toast(x.message); }
       } })),
@@ -1212,7 +1380,20 @@ setInterval(renderRail, 30000);
 // comes back or another agent is opened, then every few seconds.
 function pingView() { const a = curAgent(); if (a && a.mode === 'watch' && S.view === 'chat' && !document.hidden) fetch(`/api/agents/${a.id}/view`, { method: 'POST' }).catch(() => {}); }
 setInterval(pingView, 5000);
-document.addEventListener('visibilitychange', pingView);
+setInterval(pollSubs, 4000);
+// While an agent is on screen, its window is looked at every few seconds. A question waiting there (a first-run
+// question, a permission, a menu) shows as a card here, so it never blocks without you seeing it.
+async function pollQuestion() {
+  const a = curAgent();
+  if (!a || !a.talk || S.view !== 'chat' || document.hidden || S.platform !== 'win32') return;
+  let d; try { d = await api('GET', `/api/agents/${a.id}/screen`); } catch { return; }
+  if (curAgent() !== a || !els.head) return;
+  const card = els.question;
+  if (d.question && d.question.asking) { if (!card) askWindow(a, d.question, '', []); }
+  else if (card && !card.dataset.waiting && card.close) card.close();
+}
+setInterval(pollQuestion, 4000);
+document.addEventListener('visibilitychange', () => { pingView(); pollSubs(); });
 connect();
 </script>
 </body>
