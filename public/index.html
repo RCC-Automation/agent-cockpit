@@ -602,8 +602,13 @@ function toolModelButton(a) {
 // The Hermes profile of an agent: its own config, model and chats. Switching starts the agent's chat of the same
 // name in the other profile; the cockpit offers to reopen a window it opened so that happens now.
 let hermesProfiles = null;
+// Kept for 20 seconds only, so a profile made in Hermes meanwhile shows the next time the list opens.
+let hermesProfilesAt = 0;
 function loadProfiles() {
-  if (!hermesProfiles) hermesProfiles = api('GET', '/api/models?harness=hermes').then(d => d.profiles || []).catch(() => { hermesProfiles = null; return []; });
+  if (!hermesProfiles || Date.now() - hermesProfilesAt > 20000) {
+    hermesProfilesAt = Date.now();
+    hermesProfiles = api('GET', '/api/models?harness=hermes').then(d => d.profiles || []).catch(() => { hermesProfiles = null; return []; });
+  }
   return hermesProfiles;
 }
 // A model name as people read it: Ollama's ":latest" tag and the "trial-" prefix of local builds left out.
