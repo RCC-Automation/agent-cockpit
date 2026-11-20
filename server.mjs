@@ -1853,10 +1853,15 @@ async function syncHub() {
     // stand-in's route and rights over to it) and follows it.
     for (const a of [...agents.values()]) {
       const p = projects.get(a.projectId);
-      if (!a.hubAgentId || a.hubTeam !== 'team' || !a.sessionId || !p?.hubConversationId) continue;
+      if (!a.hubAgentId || !a.hubTeam || !a.sessionId || !p?.hubConversationId) continue;
       const harness = HUB_HARNESS[harnessOf(a)], sid = a.sessionId, was = a.hubAgentId;
       const f = await hub.call('GET', `/v1/app/agents/by-session?harness=${encodeURIComponent(harness)}&sessionId=${encodeURIComponent(sid)}`);
       const id = f.status === 200 ? f.json?.agentId : null;
+      // An agent that was in another chat and has since been moved into the team (by the owner, in ai-chat).
+      if (a.hubTeam === 'other') {
+        if (id && f.json?.conversationId === p.hubConversationId && a.hubAgentId === was) { a.hubAgentId = id; a.hubTeam = 'team'; saveRoster(); emitAgent(a); }
+        continue;
+      }
       if (!id || id === was) continue;
       const b = await hub.call('POST', '/v1/app/bindings', { agentId: id, conversationId: p.hubConversationId });
       if (b.status !== 200 || a.hubAgentId !== was || a.sessionId !== sid) continue;

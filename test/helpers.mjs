@@ -108,6 +108,7 @@ export async function startFakeHub({ token = 'app_test_token', elsewhere = [] } 
   const calls = [], streams = new Set();
   let n = 0;
   const bySession = new Map();
+  const convOf = new Map(); // agentId -> the conversation the hub reports it in (by-session)
   const send = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
   const frame = (res, f) => res.write(`event: ${f.t}\ndata: ${JSON.stringify(f)}\n\n`);
   const server = http.createServer(async (req, res) => {
@@ -126,7 +127,7 @@ export async function startFakeHub({ token = 'app_test_token', elsewhere = [] } 
     if (p === '/v1/app/conversations' && req.method === 'POST') return send(res, 201, { conversationId: `conv_${++n}` });
     if (p === '/v1/app/agents/by-session') {
       const id = bySession.get(`${call.query.harness}:${call.query.sessionId}`);
-      return id ? send(res, 200, { agentId: id, displayName: '', conversationId: null }) : send(res, 404, { error: 'unknown_session', message: 'no' });
+      return id ? send(res, 200, { agentId: id, displayName: '', conversationId: convOf.get(id) ?? null }) : send(res, 404, { error: 'unknown_session', message: 'no' });
     }
     if (p === '/v1/app/agents' && req.method === 'POST') {
       const id = `agt_${++n}`; bySession.set(`${body.harness}:${body.sessionId}`, id); call.agentId = id;
@@ -148,6 +149,8 @@ export async function startFakeHub({ token = 'app_test_token', elsewhere = [] } 
     push: f => { for (const s of streams) frame(s, f); },
     // The agent's own bridge tools registered for this session: the hub now names that identity for it.
     ownIdentity: (harness, sessionId, agentId) => bySession.set(`${harness}:${sessionId}`, agentId),
+    // The owner moved an agent into a conversation in ai-chat.
+    movedInto: (agentId, conversationId) => convOf.set(agentId, conversationId),
     streams: () => streams.size,
     dropStream: () => { for (const s of streams) s.destroy(); streams.clear(); },
     close: () => new Promise(r => { for (const s of streams) s.destroy(); server.close(r); }),

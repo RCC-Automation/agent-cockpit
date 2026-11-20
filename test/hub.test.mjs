@@ -140,6 +140,13 @@ describe('with a hub', () => {
     assert.equal(saved().hubTeam, 'team');
   });
 
+  test('an agent the owner moves from another chat into the team is shown in the team', async () => {
+    const beta = hubIdOf('BETA');
+    fake.ownIdentity('claude-code', 'aaaaaaaa-aaaa-4aaa-8aaa-000000000002', beta);
+    fake.movedInto(beta, 'conv_1');
+    assert.ok(await until(async () => (await agentNamed(c, 'BETA'))?.hubTeam === 'team', 30000), 'BETA is in the team now');
+  });
+
   // Last in this group: it restarts the shared cockpit.
   test('after a restart the project keeps its one team conversation', async () => {
     await c.restart();
