@@ -42,26 +42,50 @@ export function writeSession(config, cwd, { id, title, turns }) {
 
 export async function startCockpit(extraEnv = {}) {
   const port = nextPort++, data = tempDir('data'), config = tempDir('config');
-  const env = { ...process.env, COCKPIT_PORT: String(port), COCKPIT_DATA: data, CLAUDE_CONFIG_DIR: config, COCKPIT_HOST: '127.0.0.1', ...extraEnv };
+  const env = { ...process.env, COCKPIT_PORT: String(port), COCKPIT_DATA: data, CLAUDE_CONFIG_DIR: config, COCKPIT_HOST: '127.0.0.1', COCKPIT_TEST: '1', ...extraEnv };
   delete env.COCKPIT_TOKEN;
-  let child;
-  const boot = () => { child = spawn(process.execPath, [path.join(ROOT, 'server.mjs')], { env, stdio: 'ignore' }); };
+  let child, listening;
+  // The cockpit prints "is running" once it listens. Waiting for that line is instant; asking a port that does
+  // not listen yet costs about 2 s per try on Windows (it retries the connection before giving up).
+  const boot = () => {
+    child = spawn(process.execPath, [path.join(ROOT, 'server.mjs')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    listening = new Promise(r => {
+      child.stdout.on('data', d => { if (out !== null) { out += d; if (/is running/.test(out)) { out = null; r(true); } } });
+      child.once('exit', () => r(false));
+    });
+    child.stderr.resume();
+  };
   const base = `http://127.0.0.1:${port}`;
   const call = async (method, p, body, headers = {}) => {
     const res = await fetch(base + p, { method, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
     let json = null; const text = await res.text(); try { json = JSON.parse(text); } catch { /* not JSON */ }
     return { status: res.status, json, text, headers: res.headers };
   };
+  // Waits until the cockpit answers: up to 30 s on a busy PC, but no longer than it takes. A cockpit that does
+  // not come up is stopped before the error, so no test ever leaves one running (the test run would hang on it).
   const up = async () => {
-    for (let i = 0; i < 60; i++) { try { if ((await call('GET', '/api/health')).status === 200) return; } catch { /* not yet */ } await new Promise(r => setTimeout(r, 150)); }
+    let timer;
+    const ok = await Promise.race([listening, new Promise(r => { timer = setTimeout(() => r(false), 30_000); })]);
+    clearTimeout(timer);
+    if (ok) { try { if ((await call('GET', '/api/health')).status === 200) return; } catch { /* not answering */ } }
     let log = ''; try { log = fs.readFileSync(path.join(data, 'cockpit.log'), 'utf8').split(/\r?\n/).slice(-8).join(' | '); } catch { /* none */ }
+    await kill();
     throw new Error('cockpit did not start. Its log ends with: ' + log);
   };
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  // Resolves when the process is gone; after `ms` it is killed. The timer is cleared, so nothing stays pending.
+  const gone = ms => new Promise(r => {
+    if (exited()) return r();
+    const t = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } }, ms);
+    child.once('exit', () => { clearTimeout(t); r(); });
+  });
+  const kill = async () => { const g = gone(0); await g; };
   // The exit listener goes on before the shutdown request: a cockpit that exits quickly is never missed.
   const stop = async () => {
-    const gone = new Promise(r => { if (child.exitCode !== null || child.signalCode !== null) return r(); child.once('exit', r); setTimeout(() => { child.kill('SIGKILL'); r(); }, 4000); });
+    const g = gone(8000);
     try { await call('POST', '/api/shutdown', {}); } catch { /* already gone */ }
-    await gone;
+    await g;
   };
   boot(); await up();
   return { port, data, config, base, call, stop, restart: async () => { await stop(); boot(); await up(); } };

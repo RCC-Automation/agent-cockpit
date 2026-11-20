@@ -11,7 +11,7 @@ import { exec, execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
-import { hubConfig, createHubClient } from './hub-client.mjs';
+import { hubConfig, createHubClient, deliveryText, outcomeFor } from './hub-client.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
 const harnessOf = a => (a && HARNESSES[a.harness]) ? a.harness : 'claude';
@@ -21,6 +21,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.COCKPIT_PORT || 4600);
 const HOST = process.env.COCKPIT_HOST || '127.0.0.1';
 const TOKEN = process.env.COCKPIT_TOKEN || '';
+const TEST_MODE = process.env.COCKPIT_TEST === '1'; // a cockpit started by the test suite (test/helpers.mjs)
 const DATA_DIR = process.env.COCKPIT_DATA || path.join(ROOT, 'data');
 const ROSTER_FILE = path.join(DATA_DIR, 'roster.json');
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -81,6 +82,7 @@ let saveTimer = null;
 function saveRoster() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
+    saveTimer = null; // nothing pending any more (shutdown() writes only while one is)
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       const tmp = ROSTER_FILE + '.tmp';
@@ -630,7 +632,7 @@ async function attachOther(a, tool) {
   const s = list.find(x => !used.has(x.sessionId) && x.title.toLowerCase() === name)
     || (fresh ? list.filter(x => !used.has(x.sessionId) && x.createdAt >= a.term.openedAt - 15_000).sort((x, y) => x.createdAt - y.createdAt)[0] : null);
   if (!s) return;
-  a.sessionId = s.sessionId; a.hubAgentId = null; a.hubTeam = null; saveRoster(); emitAgent(a);
+  a.sessionId = s.sessionId; a.hubAgentId = null; a.hubTeam = null; a.hubRouteId = null; saveRoster(); emitAgent(a);
   broadcast({ t: 'reset', agentId: a.id }); // the page loaded the empty chat before this session was found
 }
 async function pollOther(a, tool) {
@@ -708,7 +710,7 @@ async function scanProjects() {
         const s = newest.get((a.title || a.name).toLowerCase());
         if (!s || s.sessionId === a.sessionId || used.has(s.sessionId)) continue;
         used.add(s.sessionId);
-        a.sessionId = s.sessionId; a.hubAgentId = null; a.hubTeam = null;
+        a.sessionId = s.sessionId; a.hubAgentId = null; a.hubTeam = null; a.hubRouteId = null;
         const r = rt(a.id);
         r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 }; r.items = []; r.historyLoaded = false;
         saveRoster(); broadcast({ t: 'reset', agentId: a.id }); emitAgent(a);
@@ -1197,6 +1199,7 @@ function questionOf(screen) {
 }
 
 const ESC = String.fromCharCode(27);
+const ENTER = String.fromCharCode(13); // Enter alone, typed without the question check (an answer to a question)
 function canTalk(a) {
   return (a.mode || 'own') === 'watch' && termKnown(a) && a.term.alive !== false && (!!a.term.tmux || process.platform === 'win32');
 }
@@ -1465,7 +1468,7 @@ const agentRoutes = {
       if (a.term.adopted) return json(res, 409, { error: `${a.name} runs in a window you opened yourself, so the cockpit does not close it.` });
       if (rt(a.id).status === 'work') return json(res, 409, { error: `${a.name} is working. Switch when it has finished, so nothing is cut off.` });
     }
-    a.profile = profile; a.sessionId = null; a.model = ''; a.hubAgentId = null; a.hubTeam = null;
+    a.profile = profile; a.sessionId = null; a.model = ''; a.hubAgentId = null; a.hubTeam = null; a.hubRouteId = null;
     const r = rt(a.id); r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 }; r.items = []; r.historyLoaded = false; attachTried.delete(a.id);
     broadcast({ t: 'reset', agentId: a.id });
     if (!b.reopen || !termKnown(a) || a.term.alive === false) { touch(a, `Uses the Hermes profile ${profile || 'default'} when its window opens.`); return json(res, 200, { ok: true, applied: 'next start' }); }
@@ -1620,7 +1623,9 @@ const server = http.createServer(async (req, res) => {
 
 function shutdown() {
   // Nothing to stop: every agent lives in its own terminal window and keeps running.
-  try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ROSTER_FILE, rosterJson()); } catch { /* best effort */ }
+  // The roster is saved shortly after every change, so it is written here only when a save is still pending.
+  // A write can take seconds on this PC (the virus scanner checks it), and a restart should not wait for one.
+  if (saveTimer) { clearTimeout(saveTimer); try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ROSTER_FILE, rosterJson()); } catch { /* best effort */ } }
   process.exit(0);
 }
 
@@ -1671,7 +1676,45 @@ function teeLog() {
 // other through it, and the cockpit carries its messages into the windows it opened.
 let hub = null;
 function hubState() { return hub ? hub.state() : { state: 'off', error: '' }; }
-function onHubFrame(frame) { /* deliveries, answers and interrupts: Task 4 */ }
+// The hub's frames for the windows this cockpit carries: a delivery to type, an answer to a question that held
+// one, and an interrupt (Esc). A delivery is handled once, also when a reconnected stream sends it again.
+const handledDeliveries = new Set();
+const agentOfHub = id => [...agents.values()].find(a => a.hubAgentId === id);
+function onHubFrame(f) {
+  if (f.t === 'deliver') return carryDelivery(f).catch(e => console.error('[hub] delivery:', e.message));
+  const a = f.agentId && agentOfHub(f.agentId);
+  if (!a || !canTalk(a)) return;
+  if (f.t === 'interrupt') return typeToAgents([a], ESC, false).catch(() => {});
+  if (f.t === 'answer') {
+    if (f.key === 'esc') return typeToAgents([a], ESC, false).catch(() => {});
+    if (f.key === 'enter') return typeIntoWindows([{ id: a.id, pid: a.term.pid, started: a.term.started, openedAt: 0 }], ENTER, false, false).catch(() => {});
+    if (typeof f.text === 'string' && f.text) return typeToAgents([a], f.text.slice(0, 200), true, false).catch(() => {});
+  }
+}
+async function carryDelivery(f) {
+  if (!f.deliveryId || handledDeliveries.has(f.deliveryId)) return;
+  handledDeliveries.add(f.deliveryId);
+  if (handledDeliveries.size > 500) handledDeliveries.delete(handledDeliveries.values().next().value);
+  const a = agentOfHub(f.agentId);
+  let report;
+  if (!a || !canTalk(a)) report = { outcome: 'refused', reason: 'no_window' };
+  else {
+    const result = (await typeToAgents([a], deliveryText(f), true, true)).get(a.id);
+    let question = null;
+    if (result === QUESTION) { try { const s = await windowScreen(a); if (s) question = questionOf(s); } catch { /* the hold still stands */ } }
+    report = outcomeFor(result, question);
+    if (report.outcome === 'sent') nudgeWatch(a);
+  }
+  await hub.call('POST', `/v1/app/deliveries/${encodeURIComponent(f.deliveryId)}/outcome`, report);
+}
+// Each window this cockpit can type into is a route for its agent on the hub.
+async function hubRoutes() {
+  for (const a of [...agents.values()]) {
+    if (!a.hubAgentId || a.hubRouteId || !canTalk(a) || a.hubTeam !== 'team') continue;
+    const r = await hub.call('POST', '/v1/app/routes', { agentId: a.hubAgentId, kind: 'typing' });
+    if (r.status === 201 && r.json?.routeId) { a.hubRouteId = r.json.routeId; saveRoster(); }
+  }
+}
 function startHub() {
   const conf = hubConfig(DATA_DIR);
   if (!conf) return;
@@ -1714,6 +1757,7 @@ async function syncHub() {
         a.hubAgentId = id; saveRoster(); emitAgent(a);
       }
     }
+    await hubRoutes();
   } finally { hubSyncBusy = false; }
 }
 
@@ -1727,10 +1771,15 @@ function start() {
     setInterval(checkWindows, 8000);
     setTimeout(scanProjects, 800);
     setTimeout(checkWindows, 1500);
-    setInterval(adoptWindows, 20000);
-    setTimeout(adoptWindows, 4000);
-    // Start the typing helper now, so the first message does not wait for it (it takes 10 to 45 s here).
-    if (process.platform === 'win32') setTimeout(() => typerStart().catch(() => {}), 6000);
+    // A test cockpit (COCKPIT_TEST=1) never looks for the person's own windows and does not warm up the typing
+    // helper: it must not adopt, and so never type into, a real agent window, and the PowerShell helpers cost
+    // a busy PC many seconds per start.
+    if (!TEST_MODE) {
+      setInterval(adoptWindows, 20000);
+      setTimeout(adoptWindows, 4000);
+      // Start the typing helper now, so the first message does not wait for it (it takes 10 to 45 s here).
+      if (process.platform === 'win32') setTimeout(() => typerStart().catch(() => {}), 6000);
+    }
     startHub();
     console.log(`\n  Agent Cockpit is running:  ${shownUrl()}${TOKEN ? '?token=…' : ''}`);
     console.log(`  ${projects.size} project(s), ${agents.size} agent(s) · data in ${DATA_DIR}`);

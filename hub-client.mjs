@@ -78,3 +78,21 @@ export function createHubClient({ url, token, onFrame, onState, fetchImpl = fetc
     state: () => ({ state, error }),
   };
 }
+
+// What is typed into a window for a hub delivery. A person's words go in as they are. Another agent's words
+// never do: typed text carries the person's authority, so the window gets a notice and the agent reads the
+// message itself with its bridge tools (the hub's rule, from om-studio's M4).
+export function deliveryText(frame) {
+  if (frame.senderHarness === 'human') return String(frame.content ?? '');
+  return `[Team message ${frame.messageId} from ${frame.senderName || 'another agent'}. Read it with get_pending_messages.]`;
+}
+
+// The outcome reported to the hub for one typing result. A question in the window holds the delivery; a write
+// whose result is unknown is "uncertain", which the hub never sends again.
+export function outcomeFor(result, question) {
+  if (result === 'sent') return { outcome: 'sent' };
+  if (result === 'QUESTION') return { outcome: 'held', reason: 'question', question };
+  if (/window is closed|no window|no terminal window/.test(result || '')) return { outcome: 'refused', reason: 'no_window' };
+  if (/no answer from the helper/.test(result || '')) return { outcome: 'uncertain', reason: result };
+  return { outcome: 'failed', reason: String(result || 'unknown') };
+}
