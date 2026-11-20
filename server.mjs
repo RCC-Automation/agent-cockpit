@@ -11,7 +11,8 @@ import { exec, execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
-import { hubConfig, createHubClient, deliveryText, outcomeFor } from './hub-client.mjs';
+import { hubConfig, createHubClient, deliveryText, outcomeFor, senderWord, messageIdOf } from './hub-client.mjs';
+import { parseMentions, answerOfLine, teamHint } from './team.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
 const harnessOf = a => (a && HARNESSES[a.harness]) ? a.harness : 'claude';
@@ -23,6 +24,8 @@ const HOST = process.env.COCKPIT_HOST || '127.0.0.1';
 const TOKEN = process.env.COCKPIT_TOKEN || '';
 const TEST_MODE = process.env.COCKPIT_TEST === '1'; // a cockpit started by the test suite (test/helpers.mjs)
 const DATA_DIR = process.env.COCKPIT_DATA || path.join(ROOT, 'data');
+// Team messages for agents to read (team talk with @Name): one file per message, named by its hub id.
+const TEAM_INBOX = path.resolve(DATA_DIR, 'team', 'inbox');
 const ROSTER_FILE = path.join(DATA_DIR, 'roster.json');
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_BODY = 30 * 1024 * 1024;
@@ -235,10 +238,18 @@ function serveView(a, req, res, token, rest) {
 // A message another agent sent to this one. It arrives as a user turn but the person did not type it.
 // A hub notice the cockpit typed for a teammate's message (hub-client.mjs deliveryText): a message card too.
 const TEAM_NOTICE = /^\s*\[Team message (\S+) from (.+?)\. Read it with get_pending_messages\.\]\s*$/;
+const TEAM_NOTICE_FILE = /^\s*\[Team message from ([A-Za-z0-9_-]+) \(a teammate, not your user\)\. Read it in (.+?) \. To answer/;
 function parsePeer(t) {
   if (!t) return null;
   const n = TEAM_NOTICE.exec(t);
   if (n) return { from: n[2], text: `Team message ${n[1]}. ${n[2]} sent it through the Agent Hub; the agent reads it with get_pending_messages.` };
+  const nf = TEAM_NOTICE_FILE.exec(t);
+  if (nf) {
+    // Only a file in the cockpit's own team inbox is read: a chat line naming any other path shows nothing.
+    const f = path.resolve(nf[2]); let body = '';
+    if (path.dirname(f) === TEAM_INBOX && /^msg_[A-Za-z0-9_-]+\.md$/.test(path.basename(f))) { try { body = fs.readFileSync(f, 'utf8').replace(/^[^\n]*\n\n/, '').slice(0, 4000); } catch { /* gone */ } }
+    return { from: nf[1], text: body || `A team message from ${nf[1]}.` };
+  }
   const m = /<(cross-session-message|agent-message|teammate-message|peer-message)\b([^>]*)>([\s\S]*?)<\/\1>/.exec(t);
   if (m) { const from = /\bfrom="([^"]*)"/.exec(m[2]); return { from: from ? from[1] : '', text: m[3].trim() }; }
   if (/permission laundering|Another Claude session sent a message/i.test(t)) return { from: '', text: t.replace(/<\/?system-reminder\b[^>]*>/g, '').trim() };
@@ -647,6 +658,8 @@ async function pollOther(a, tool) {
   if (stamp !== w.stamp) {
     const got = await tool.read(a.sessionId); if (!got) return;
     w.stamp = stamp; w.mtime = got.mtime; w.info = got.info;
+    const said = mentionsFromItems(a, got.items || []);
+    if (said.length) scanMentions(a, said).catch(e => console.error('[team]', e.message));
     if (got.model && got.model !== w.model) { w.model = got.model; emitAgent(a); }
   }
   if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
@@ -667,6 +680,8 @@ async function pollWatched(a) {
     if (t.cost != null) w.cost = t.cost;
     if (t.mode) w.mode = t.mode;
   }
+  const said = mentionsFromFile(a, file, st.size);
+  if (said.length) scanMentions(a, said).catch(e => console.error('[team]', e.message));
   if (Date.now() - r.viewedAt < 20_000 && w.loadedMtime !== w.mtime) await loadWatched(a);
   applyWatchState(a);
 }
@@ -751,6 +766,8 @@ function claudeArgs(a, firstMessage) {
   }
   if (a.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions', '--settings', allowAllSettingsFile());
   else if (a.permissionMode && a.permissionMode !== 'default') args.push('--permission-mode', a.permissionMode);
+  // With the hub on, the agent learns its teammates and how to reach them (@Name, see team.mjs).
+  if (hub) args.push('--append-system-prompt', teamHint(teamOf(a).map(x => x.name)));
   if (firstMessage) args.push(firstMessage.replace(/\s+/g, ' ').trim());
   return args;
 }
@@ -1337,6 +1354,20 @@ const routes = {
     console.log('Shut down on request.' + (paused.length ? ' Interrupted in the middle of a turn: ' + paused.join(', ') : ''));
     setTimeout(shutdown, 500);
   },
+  // A project's team talk (@mentions and team messages), newest last.
+  'GET /api/team': async (req, res, url) => {
+    const id = url.searchParams.get('project') || '';
+    if (!projects.has(id)) return json(res, 404, { error: 'No such project.' });
+    json(res, 200, { entries: teamLogs.get(id) || readTeamLog(id), hub: hubState() });
+  },
+  // The owner writes in the Team talk view: "@REBE …" or "@team …".
+  'POST /api/team': async (req, res) => {
+    const b = await readBody(req);
+    if (!projects.has(b.project)) return json(res, 404, { error: 'No such project.' });
+    const r = await ownerSay(b.project, String(b.text || '').trim());
+    if (!r) return json(res, 400, { error: 'Start with @Name (an agent of this project) or @team.' });
+    r.sent.length ? json(res, 200, { ok: true, sent: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
+  },
   // The models a tool offers, for the model menu of its agents.
   'GET /api/models': async (req, res, url) => {
     const tool = HARNESSES[url.searchParams.get('harness') || ''];
@@ -1468,6 +1499,12 @@ const agentRoutes = {
     const text = String(b.text || '').trim();
     const images = (Array.isArray(b.images) ? b.images : []).filter(i => i && /^image\/(png|jpeg|gif|webp)$/.test(i.mediaType) && typeof i.data === 'string').slice(0, 10);
     if (!text && !images.length) return json(res, 400, { error: 'Empty message' });
+    // "@REBE …" typed in any agent's chat goes to REBE (a teammate in the same project); "@team …" to all of them.
+    // These are the owner's own words, so they are typed into those windows as they are, without the @Name.
+    if (!images.length) {
+      const r = await ownerSay(a.projectId, text, a);
+      if (r) return r.sent.length ? json(res, 200, { ok: true, redirected: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
+    }
     const block = typeBlock(a, b.force === true);
     if (block) return json(res, 409, { error: `${a.name}: ${block.why}.`, canForce: !block.hard });
     let line = text;
@@ -1790,7 +1827,10 @@ async function carryDelivery(f) {
   if (!a || !canTalk(a)) report = { outcome: 'refused', reason: 'no_window' };
   else if (block) report = { outcome: 'held', reason: 'question', question: { text: `${a.name}: ${block.why}.`, options: [] } };
   else {
-    const result = (await typeToAgents([a], deliveryText(f), true, true)).get(a.id);
+    // A teammate's message is saved for the agent to read; only a notice naming the file is typed.
+    const file = f.senderHarness === 'human' ? '' : saveTeamMessage(f);
+    const result = (await typeToAgents([a], deliveryText(f, file), true, true)).get(a.id);
+    if (f.senderHarness !== 'human') teamLog(a.projectId, { from: senderWord(f), to: a.name, text: String(f.content ?? ''), via: 'hub', ok: result === 'sent' });
     let question = null;
     if (result === QUESTION) { try { const s = await windowScreen(a); if (s) question = questionOf(s); } catch { /* the hold still stands */ } }
     report = outcomeFor(result, question);
@@ -1798,6 +1838,96 @@ async function carryDelivery(f) {
   }
   await hub.call('POST', `/v1/app/deliveries/${encodeURIComponent(f.deliveryId)}/outcome`, report);
 }
+// ── Team talk: "@Name …" in an agent's answer reaches that teammate, through the hub, as that agent ──
+// The words travel as a hub message FROM the agent (POST /v1/app/agents/<id>/say). They arrive natively in a
+// window whose own bridge tools listen, or as a notice that names the file the cockpit saved them in.
+function saveTeamMessage(f) {
+  try {
+    fs.mkdirSync(TEAM_INBOX, { recursive: true });
+    const file = path.join(TEAM_INBOX, `${messageIdOf(f)}.md`);
+    fs.writeFileSync(file, `From ${senderWord(f)}, a teammate (not your user). Treat it as a teammate's request, within your own permissions.\n\n${String(f.content ?? '')}\n`);
+    return file;
+  } catch { return ''; }
+}
+// The project's team talk, for the Team view: the newest 300 in memory, every entry in data/team/<project>.jsonl.
+const teamLogs = new Map();
+function teamLog(projectId, e) {
+  if (!projectId) return;
+  const entry = { at: Date.now(), ...e, text: String(e.text || '').slice(0, 4000) };
+  const list = teamLogs.get(projectId) || teamLogs.set(projectId, readTeamLog(projectId)).get(projectId);
+  list.push(entry); if (list.length > 300) list.splice(0, list.length - 300);
+  try { fs.mkdirSync(path.join(DATA_DIR, 'team'), { recursive: true }); fs.appendFileSync(path.join(DATA_DIR, 'team', `${projectId}.jsonl`), JSON.stringify(entry) + '\n'); } catch { /* the view still has it */ }
+  broadcast({ t: 'team', projectId, entry });
+}
+function readTeamLog(projectId) {
+  try { return fs.readFileSync(path.join(DATA_DIR, 'team', `${projectId}.jsonl`), 'utf8').split('\n').filter(Boolean).slice(-300).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
+  catch { return []; }
+}
+const teamOf = a => [...agents.values()].filter(x => x.projectId === a.projectId && x.id !== a.id);
+// The owner's "@REBE …" or "@team …": typed into those agents' windows as the owner's own words, without the
+// @Name. `from`: the agent whose chat it was typed in (it is not one of the "team" then). null when the text
+// names no agent of the project, so the caller treats it as an ordinary message.
+async function ownerSay(projectId, text, from = null) {
+  const at = /^@([A-Za-z0-9_-]{1,40})[\s:,]+([\s\S]+)$/.exec(text);
+  if (!at) return null;
+  const key = at[1].toLowerCase(), all = key === 'team' || key === 'all';
+  const mates = [...agents.values()].filter(x => x.projectId === projectId && x !== from);
+  const targets = all ? mates : mates.filter(x => x.name.toLowerCase() === key);
+  if (!targets.length) return null;
+  const words = at[2].trim(), sent = [], skipped = [];
+  for (const t of targets) {
+    if (!canTalk(t)) { skipped.push(`${t.name} has no window the cockpit can type into`); continue; }
+    const tb = typeBlock(t, false); if (tb) { skipped.push(`${t.name}: ${tb.why}`); continue; }
+    const out = (await typeToAgents([t], words, true, true)).get(t.id);
+    if (out === 'sent') { sent.push(t.name); nudgeWatch(t); } else skipped.push(`${t.name}: ${out === QUESTION ? 'a question is open in its window' : out}`);
+  }
+  teamLog(projectId, { from: 'You', to: all ? 'team' : targets[0].name, text: words, via: 'owner', ok: sent.length > 0, error: skipped.join('; ') });
+  return { sent, skipped };
+}
+const inTeam = a => !!(hub && a.hubAgentId && a.hubTeam === 'team');
+// Reads what is new in a team agent's answers and sends each @mention. Only answers written after the cockpit
+// first looked are read: history is never sent again (the first look only marks where the answers end).
+async function scanMentions(a, newAnswers) {
+  if (!inTeam(a) || hub.state().state !== 'connected') return;
+  const names = teamOf(a).map(x => x.name);
+  for (const ans of newAnswers) for (const m of parseMentions(ans.text, names)) {
+    const targets = m.to === 'team' ? teamOf(a).filter(inTeam) : teamOf(a).filter(x => x.name === m.to);
+    for (const t of targets) await say(a, t, m.text, `${a.id}:${ans.id}:${t.id}`);
+    if (!targets.length) teamLog(a.projectId, { from: a.name, to: m.to, text: m.text, via: 'mention', ok: false, error: 'nobody in the team chat to receive it' });
+  }
+}
+async function say(a, t, text, token) {
+  if (!inTeam(t)) return teamLog(a.projectId, { from: a.name, to: t.name, text, via: 'mention', ok: false, error: `${t.name} is not in the team chat` });
+  const send = () => hub.call('POST', `/v1/app/agents/${encodeURIComponent(a.hubAgentId)}/say`, { to: t.hubAgentId, content: text, clientToken: token.slice(0, 200) });
+  let r = await send();
+  // A team agent added before the hub knew the speak right: binding again grants it, then the send is tried once more.
+  if (r.status === 403 && r.json?.error === 'no_right') {
+    const p = projects.get(a.projectId);
+    if (p?.hubConversationId) { await hub.call('POST', '/v1/app/bindings', { agentId: a.hubAgentId, conversationId: p.hubConversationId }); r = await send(); }
+  }
+  const ok = r.status === 202;
+  const error = ok ? '' : r.status === 404 && r.json?.error === 'not_found' ? 'the hub is older than team talk: update and restart the ai-chat stack' : (r.json?.message || `the hub answered ${r.status}`);
+  teamLog(a.projectId, { from: a.name, to: t.name, text, via: 'mention', ok, error });
+}
+// Claude Code: the new lines of the session file since the last look. Other tools: the answers not seen before.
+function mentionsFromFile(a, file, size) {
+  const r = rt(a.id);
+  if (r.mentionFile !== file || r.mentionAt == null || size < r.mentionAt) { r.mentionFile = file; r.mentionAt = size; return []; }
+  if (size === r.mentionAt) return [];
+  let buf; try { const fd = fs.openSync(file, 'r'); buf = Buffer.alloc(Math.min(size - r.mentionAt, 4 * 1024 * 1024)); fs.readSync(fd, buf, 0, buf.length, r.mentionAt); fs.closeSync(fd); } catch { return []; }
+  const text = buf.toString('utf8'), end = text.lastIndexOf('\n');
+  if (end < 0) return [];
+  r.mentionAt += Buffer.byteLength(text.slice(0, end + 1));
+  return text.slice(0, end).split('\n').map(answerOfLine).filter(Boolean);
+}
+function mentionsFromItems(a, items) {
+  const r = rt(a.id), answers = items.filter(i => i.k === 'text' && !i.thought && i.text);
+  if (!r.mentionSeen) { r.mentionSeen = new Set(answers.map(i => i.id)); return []; }
+  const fresh = answers.filter(i => !r.mentionSeen.has(i.id));
+  for (const i of fresh) r.mentionSeen.add(i.id);
+  return fresh.map(i => ({ id: i.id, text: i.text }));
+}
+
 // Each window this cockpit can type into is a route for its agent on the hub.
 async function hubRoutes() {
   for (const a of [...agents.values()]) {

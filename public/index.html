@@ -284,6 +284,11 @@ a.artlink svg{width:14px;height:14px;flex:none}
 .form .fixed{font-family:var(--mono);font-size:.8rem;font-weight:500;color:var(--ink);padding:7px 0}
 .err{color:var(--fail);font-weight:600}
 .list{display:flex;flex-direction:column;gap:6px;max-width:860px}
+.talk{display:flex;flex-direction:column;gap:8px;max-width:860px;max-height:60vh;overflow:auto;padding:4px 2px}
+.talk-row{border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--surface)}
+.talk-row.failed{border-color:color-mix(in srgb,var(--fail) 45%,var(--line))}
+.talk-head{font-size:.85rem;margin-bottom:4px}
+.talk-text{white-space:pre-wrap;word-break:break-word}
 .it{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 12px}
 .it .what{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:2px}
 .it .what b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -317,6 +322,7 @@ a.artlink svg{width:14px;height:14px;flex:none}
   <button class="btn sm" id="btn-look" type="button" title="Theme and text size" aria-haspopup="true">Aa</button>
   <button class="btn sm" id="btn-off" type="button" title="Stop the cockpit itself. Agents in terminal windows keep running.">Shut down</button>
   <button class="btn" id="btn-team" type="button" title="All agents of this project: wake or remove the ones you pick">Team</button>
+  <button class="btn" id="btn-talk" type="button" title="What the agents of this project say to each other with @Name, and a box to write to them">Team talk</button>
   <button class="btn" id="btn-wake" type="button" title="Open a terminal window for every agent of this project that is not running">Wake all</button>
   <button class="btn" id="btn-resume" type="button">Sessions</button>
   <button class="btn primary" id="btn-new" type="button">+ New agent</button>
@@ -454,7 +460,7 @@ function renderBar() {
   // The Agent Hub, when one is set up: agents of a project reach each other through it.
   const hs = S.hub && S.hub.state;
   if (hs && hs !== 'off') counts.append(h('span', { class: 'pill ' + (hs === 'connected' ? 's-done' : hs === 'connecting' ? 's-idle' : 's-failed'), title: hs === 'connected' ? 'Connected to the Agent Hub: agents of a project reach each other' : 'The Agent Hub does not answer: ' + (S.hub.error || ''), text: hs === 'connected' ? 'Hub: connected' : hs === 'connecting' ? 'Hub: connecting' : 'Hub: not reachable' }));
-  $('btn-new').disabled = $('btn-resume').disabled = $('btn-wake').disabled = $('btn-team').disabled = $('btn-settings').disabled = !S.project;
+  $('btn-new').disabled = $('btn-resume').disabled = $('btn-wake').disabled = $('btn-team').disabled = $('btn-talk').disabled = $('btn-settings').disabled = !S.project;
   const needAll = [...S.agents.values()].filter(a => a.status === 'need').length;
   document.title = (needAll ? `(${needAll}) ` : '') + 'Cockpit' + (curProject() ? ' · ' + curProject().name : '');
   $('btn-notify').hidden = !('Notification' in window) || Notification.permission !== 'default';
@@ -498,6 +504,7 @@ function renderMain() {
   if (S.view === 'new') return main.append(viewNew());
   if (S.view === 'settings' && curProject()) return main.append(viewSettings());
   if (S.view === 'team' && curProject()) return main.append(viewTeam());
+  if (S.view === 'talk' && curProject()) return main.append(viewTalk());
   if (S.view === 'resume') return main.append(viewResume());
   const a = curAgent();
   if (!a) return main.append(viewEmpty());
@@ -1115,7 +1122,9 @@ function micButton(ta) {
 // ───────── composer ─────────
 async function send(a, text, images, force) {
   try {
-    await api('POST', `/api/agents/${a.id}/message`, { text, images: images.map(i => ({ mediaType: i.mediaType, data: i.data })), force: !!force });
+    const d = await api('POST', `/api/agents/${a.id}/message`, { text, images: images.map(i => ({ mediaType: i.mediaType, data: i.data })), force: !!force });
+    // "@REBE …" went to a teammate instead of this agent.
+    if (d.redirected) toast(`Sent to ${d.redirected.join(', ')}${d.skipped && d.skipped.length ? `. Not sent: ${d.skipped.join('; ')}` : ''}.`);
     return true;
   } catch (e) {
     // A question waits in the agent's window. Show it here; once it is answered, the message goes out.
@@ -1358,6 +1367,41 @@ function whereText(a) {
   if (a.window === 'closed') return 'terminal window closed';
   return a.asleep ? 'not running' : 'active in a terminal';
 }
+// Team talk: what the agents of the project said to each other with @Name, and what you said to them. Live.
+function viewTalk() {
+  const p = curProject();
+  const list = h('div', { class: 'talk', role: 'log', 'aria-live': 'polite' }, h('span', { class: 'sub', text: 'Loading…' }));
+  const row = e => h('div', { class: 'talk-row' + (e.ok === false ? ' failed' : '') },
+    h('div', { class: 'talk-head' },
+      h('b', { text: e.from || '?' }), h('span', { class: 'hint', text: ' → ' }), h('b', { text: e.to === 'team' ? 'everyone' : (e.to || '?') }),
+      h('span', { class: 'hint', text: `  ·  ${new Date(e.at).toLocaleTimeString()}${e.via === 'hub' ? '  ·  arrived' : ''}` })),
+    h('div', { class: 'talk-text', text: e.text || '' }),
+    e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null);
+  const paint = entries => {
+    list.replaceChildren(...(entries.length ? entries.map(row) : [h('span', { class: 'sub', text: 'No team talk yet. An agent reaches a teammate by starting a paragraph of its answer with @Name; you can write here with @Name or @team.' })]));
+    list.scrollTop = list.scrollHeight;
+  };
+  let entries = [];
+  api('GET', `/api/team?project=${encodeURIComponent(p.id)}`).then(d => { entries = d.entries || []; paint(entries); }).catch(x => list.replaceChildren(h('span', { class: 'err', text: x.message })));
+  els.talkAdd = (projectId, e) => { if (projectId !== p.id) return; entries.push(e); paint(entries); };
+  const names = teamOf(p.id).map(a => a.name);
+  const box = h('input', { class: 'find', type: 'text', id: 'talk-say', placeholder: `@${names[0] || 'Name'} your message   ·   @team for everyone`, 'aria-label': 'Write to an agent with @Name, or @team', autocomplete: 'off', style: 'flex:1 1 320px' });
+  const sendB = h('button', { class: 'btn primary', type: 'submit', text: 'Send' });
+  const form = h('form', { class: 'acts', onsubmit: async ev => {
+    ev.preventDefault();
+    const text = box.value.trim(); if (!text) return;
+    sendB.disabled = true;
+    try { const d = await api('POST', '/api/team', { project: p.id, text }); box.value = ''; if (d.skipped && d.skipped.length) toast('Not sent to: ' + d.skipped.join('; ')); }
+    catch (x) { toast(x.message); }
+    sendB.disabled = false; box.focus();
+  } }, box, sendB);
+  const hubNote = S.hub && S.hub.state === 'connected' ? null
+    : h('span', { class: 'hint', text: 'The Agent Hub is not connected, so agents cannot reach each other with @Name right now. What you write here still goes to their windows.' });
+  setTimeout(() => box.focus(), 0);
+  return h('div', { class: 'pane talk-pane' }, h('h2', { text: `Team talk · ${p.name}` }),
+    h('span', { class: 'sub', text: `Agents: ${names.join(', ') || 'none'}. Each @Name paragraph an agent writes is delivered to that teammate.` }),
+    hubNote, list, form);
+}
 function viewTeam() {
   const p = curProject(); const picked = new Set(); const list = h('div', { class: 'list' });
   const wakeB = h('button', { class: 'btn', type: 'button' }), removeB = h('button', { class: 'btn danger', type: 'button' });
@@ -1494,6 +1538,7 @@ function connect() {
   es.onmessage = m => {
     const ev = JSON.parse(m.data);
     if (ev.t === 'hub') { S.hub = ev.hub; renderBar(); }
+    if (ev.t === 'team' && els.talkAdd) els.talkAdd(ev.projectId, ev.entry);
     if (ev.t === 'agent') onAgent(ev.agent);
     else if (ev.t === 'item') upsertItem(ev.agentId, ev.item);
     else if (ev.t === 'delta') onDelta(ev.agentId, ev.id, ev.text);
@@ -1537,6 +1582,7 @@ $('btn-look').addEventListener('click', lookMenu);
 $('btn-project').addEventListener('click', () => go('project'));
 $('btn-settings').addEventListener('click', () => go('settings'));
 $('btn-team').addEventListener('click', () => go('team'));
+$('btn-talk').addEventListener('click', () => go('talk'));
 $('btn-wake').addEventListener('click', async () => {
   const p = curProject(); if (!p) return;
   const sleeping = teamOf(p.id).filter(a => a.asleep).map(a => a.name);

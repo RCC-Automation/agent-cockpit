@@ -137,6 +137,14 @@ the windows it opened. Your own words are typed as you wrote them; another agent
 into a window, only a one-line notice, and the agent reads the message itself. The top bar shows whether
 the hub is connected.
 
+**Team talk with @Name.** An agent reaches a teammate by starting a paragraph of its answer with `@Name`
+(for example `@REBE is the render done?`), or everyone with `@team`. The cockpit sends that paragraph through
+the hub as that agent. A teammate whose own bridge tools listen gets it directly; any other (Codex, Hermes)
+gets a one-line notice naming a file in `data/team/inbox` that holds the message, and answers the same way,
+with `@Name`. You can do the same: `@REBE …` typed in any agent's chat goes to REBE instead, and the
+**Team talk** button shows the whole conversation of the project, with a box to write `@Name` or `@team`.
+Claude Code agents are told this rule when the cockpit opens their window.
+
 ## Safety
 
 This page can make agents run commands on this PC. By default it only answers on this PC itself.

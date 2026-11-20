@@ -139,6 +139,7 @@ export async function startFakeHub({ token = 'app_test_token', elsewhere = [] } 
       return send(res, 200, { bound: true });
     }
     if (p === '/v1/app/routes' && req.method === 'POST') return send(res, 201, { routeId: `rte_${++n}` });
+    if (/^\/v1\/app\/agents\/[^/]+\/say$/.test(p) && req.method === 'POST') return send(res, 202, { messageId: `msg_${++n}`, duplicate: false });
     if (/^\/v1\/app\/deliveries\/[^/]+\/outcome$/.test(p)) return send(res, 200, { ok: true });
     send(res, 404, { error: 'not_found', message: p });
   });
