@@ -1150,7 +1150,9 @@ function askWindow(a, q, text, images) {
         h('div', { class: 'winq-head' }, h('b', { text: `${a.name}'s window asks you something` }), h('span', { class: 'hint', text: text ? 'Your message is sent right after you answer.' : '' })),
         h('pre', { text: qq.text }),
         h('div', { class: 'acts' },
-          ...qq.options.map(o => h('button', { class: 'btn sm', type: 'button', text: `${o.key}. ${o.label}`, onclick: () => after({ text: o.key }) })),
+          ...qq.options.map(o => o.pick != null
+            ? h('button', { class: 'btn sm' + (o.pick === qq.selected ? ' primary' : ''), type: 'button', text: o.label, title: 'Pick this line in the window (arrow keys, then Enter)', onclick: () => after({ pick: o.pick }) })
+            : h('button', { class: 'btn sm', type: 'button', text: `${o.key}. ${o.label}`, onclick: () => after({ text: o.key }) })),
           h('button', { class: 'btn sm', type: 'button', text: 'Enter', title: 'Press Enter in the window: takes the answer that is preselected there', onclick: () => after({ key: 'enter' }) }),
           own,
           h('button', { class: 'btn sm', type: 'button', text: 'Esc', title: 'Press Esc in the window: usually cancels the question', onclick: () => after({ key: 'esc' }) }),

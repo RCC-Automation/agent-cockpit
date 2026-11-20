@@ -1063,6 +1063,8 @@ public static class CockpitKeys {
     for (int i = 0; i < text.Length; i++) for (int d = 0; d < 2; d++) {
       char c = text[i];
       var r = new INPUT_RECORD(); r.EventType = 1; r.KeyEvent.bKeyDown = d == 0 ? 1 : 0; r.KeyEvent.wRepeatCount = 1;
+      // Two private characters stand for the arrow keys (menus without numbers are answered with them).
+      if (c == (char)0xE001 || c == (char)0xE002) { r.KeyEvent.wVirtualKeyCode = c == (char)0xE001 ? (ushort)0x28 : (ushort)0x26; r.KeyEvent.UnicodeChar = (char)0; recs.Add(r); continue; }
       r.KeyEvent.wVirtualKeyCode = c == '\\r' ? (ushort)13 : c == (char)27 ? (ushort)27 : (ushort)0; r.KeyEvent.UnicodeChar = c; recs.Add(r); }
     // In pieces, so a long message does not overrun the console's input buffer.
     bool ok = true; uint n;
@@ -1241,7 +1243,21 @@ function questionOf(screen) {
   for (const l of tail) { const m = /^\s*(?:[(\[][^)\]]{0,2}[)\]]|[●○◉◯*>❯›-])?\s*(\d{1,2})[.)]\s+(.{1,80})$/.exec(l); if (m) options.push({ key: m[1], label: m[2].trim() }); }
   // The same test as the typing helper: a key hint in the last few lines means a question waits there.
   const asking = tail.filter(l => l.trim()).slice(-4).some(l => /Enter to confirm|Esc to cancel|press enter to continue/i.test(l));
-  return { text: tail.join('\n').replace(/^\n+/, ''), options, asking };
+  // A menu without numbers ("❯ No, exit" / "  Yes, I trust this folder"): the lines right above the key hint,
+  // one of them marked as chosen. It is answered with the arrow keys (see 'POST answer', pick).
+  let selected = null;
+  if (asking && !options.length) {
+    let i = tail.length - 1;
+    while (i >= 0 && !/Enter to confirm|Esc to cancel|press enter to continue/i.test(tail[i])) i--;
+    i--; while (i >= 0 && !tail[i].trim()) i--;
+    const block = [];
+    while (i >= 0 && tail[i].trim()) block.unshift(tail[i--]);
+    const MARK = /^\s*[❯›>]\s+/;
+    if (block.length >= 2 && block.length <= 9 && block.filter(l => MARK.test(l)).length === 1) {
+      block.forEach((l, n) => { if (MARK.test(l)) selected = n; options.push({ key: '', label: l.replace(MARK, '').trim().slice(0, 80), pick: n }); });
+    }
+  }
+  return { text: tail.join('\n').replace(/^\n+/, ''), options, asking, selected };
 }
 
 const ESC = String.fromCharCode(27);
@@ -1529,6 +1545,19 @@ const agentRoutes = {
     const block = typeBlock(a, true);
     if (block) return json(res, 409, { error: `${a.name}: ${block.why}.` });
     const key = String(b.key || '');
+    // A line of a menu without numbers: arrow keys from the chosen line to that one, then Enter. The screen is
+    // read again first, so the moves count from what the window shows now.
+    if (Number.isInteger(b.pick)) {
+      if (a.term.tmux) return json(res, 409, { error: `${a.name}: pick the answer in its window.` });
+      const q = questionOf(await windowScreen(a));
+      if (!q.asking || q.selected == null || !q.options[b.pick]) return json(res, 409, { error: `${a.name}: the window does not show that menu any more.` });
+      const d = b.pick - q.selected;
+      const keys = (d > 0 ? '' : '').repeat(Math.abs(d));
+      const r = (await typeIntoWindows([{ id: a.id, pid: a.term.pid, started: a.term.started, openedAt: 0 }], keys + '\r', false, false)).get(a.id);
+      if (r !== 'sent') return json(res, 502, { error: `${a.name}: ${r}.` });
+      nudgeWatch(a);
+      return json(res, 200, { ok: true });
+    }
     const out = key === 'esc' ? (await typeToAgents([a], ESC, false)).get(a.id)
       : key === 'enter' ? (await typeIntoWindows([{ id: a.id, pid: a.term.pid, started: a.term.started, openedAt: 0 }], '\r', false, false)).get(a.id)
       : (await typeToAgents([a], String(b.text || '').slice(0, 200), true, false)).get(a.id);
