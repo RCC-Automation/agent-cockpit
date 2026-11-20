@@ -1049,7 +1049,8 @@ public static class CockpitKeys {
       string line = sb.ToString(0, (int)Math.Min(n, (uint)sb.Length));
       if (line.Trim().Length == 0) continue;
       seen++;
-      q = line.Contains("Enter to confirm") || line.Contains("Esc to cancel");
+      // Claude Code says "Enter to confirm" / "Esc to cancel"; Codex says "Press enter to continue".
+      q = line.Contains("Enter to confirm") || line.Contains("Esc to cancel") || line.IndexOf("press enter to continue", StringComparison.OrdinalIgnoreCase) >= 0;
     }
     CloseHandle(o); return q;
   }
@@ -1239,7 +1240,7 @@ function questionOf(screen) {
   const options = [];
   for (const l of tail) { const m = /^\s*(?:[(\[][^)\]]{0,2}[)\]]|[●○◉◯*>❯›-])?\s*(\d{1,2})[.)]\s+(.{1,80})$/.exec(l); if (m) options.push({ key: m[1], label: m[2].trim() }); }
   // The same test as the typing helper: a key hint in the last few lines means a question waits there.
-  const asking = tail.filter(l => l.trim()).slice(-4).some(l => /Enter to confirm|Esc to cancel/.test(l));
+  const asking = tail.filter(l => l.trim()).slice(-4).some(l => /Enter to confirm|Esc to cancel|press enter to continue/i.test(l));
   return { text: tail.join('\n').replace(/^\n+/, ''), options, asking };
 }
 
