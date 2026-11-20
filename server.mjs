@@ -613,13 +613,19 @@ function finishOther(a, items) {
 }
 // An agent of another tool that the cockpit just started has no session id yet. Its session is the newest one
 // in its folder that began after its window opened (Hermes: the one carrying its name).
+// A session that carries the agent's name is its own whenever it is found; matching by start time only works
+// soon after the window opened, so that is tried only then. Looked up at most every 15 s per agent.
+const attachTried = new Map();
 async function attachOther(a, tool) {
-  if (!a.term || !a.term.openedAt || Date.now() - a.term.openedAt > 30 * 60_000) return;
+  if (!a.term || !a.term.openedAt) return;
+  if (Date.now() - (attachTried.get(a.id) || 0) < 15_000) return;
+  attachTried.set(a.id, Date.now());
   const used = new Set([...agents.values()].map(x => x.sessionId).filter(Boolean));
   let list; try { list = await tool.sessions(a.cwd, a.term.openedAt - 60_000); } catch { return; }
   const name = (a.title || a.name).toLowerCase();
+  const fresh = Date.now() - a.term.openedAt < 30 * 60_000;
   const s = list.find(x => !used.has(x.sessionId) && x.title.toLowerCase() === name)
-    || list.filter(x => !used.has(x.sessionId) && x.createdAt >= a.term.openedAt - 15_000).sort((x, y) => x.createdAt - y.createdAt)[0];
+    || (fresh ? list.filter(x => !used.has(x.sessionId) && x.createdAt >= a.term.openedAt - 15_000).sort((x, y) => x.createdAt - y.createdAt)[0] : null);
   if (!s) return;
   a.sessionId = s.sessionId; saveRoster(); emitAgent(a);
 }
