@@ -4,6 +4,8 @@
 // Run with:  node --test test/hub.test.mjs
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { startCockpit, startFakeHub, until, tempDir, writeSession } from './helpers.mjs';
 import { deliveryText, outcomeFor } from '../hub-client.mjs';
 
@@ -115,6 +117,16 @@ describe('with a hub', () => {
     assert.ok(await until(async () => outcomes().length === 2));
     await new Promise(r => setTimeout(r, 1000));
     assert.equal(outcomes().length, 2, 'one outcome for dlv_2');
+  });
+
+  test("when the agent's own identity appears, the cockpit puts it in the team and follows it", async () => {
+    fake.ownIdentity('claude-code', 'aaaaaaaa-aaaa-4aaa-8aaa-000000000001', 'agt_own_alpha');
+    assert.ok(await until(async () => paths(fake, '/v1/app/bindings').some(b => b.body.agentId === 'agt_own_alpha'), 30000), 'the own identity is bound');
+    assert.equal(paths(fake, '/v1/app/bindings').find(b => b.body.agentId === 'agt_own_alpha').body.conversationId, 'conv_1');
+    // The cockpit now knows ALPHA by the own identity (deliveries come for that one).
+    const saved = () => JSON.parse(fs.readFileSync(path.join(c.data, 'roster.json'), 'utf8')).agents.find(a => a.name === 'ALPHA');
+    assert.ok(await until(async () => saved()?.hubAgentId === 'agt_own_alpha', 5000), 'ALPHA follows its own identity');
+    assert.equal(saved().hubTeam, 'team');
   });
 
   // Last in this group: it restarts the shared cockpit.

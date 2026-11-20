@@ -1844,6 +1844,20 @@ async function syncHub() {
         a.hubAgentId = id; saveRoster(); emitAgent(a);
       }
     }
+    // The agent's own bridge tools may join after the cockpit made a stand-in for its session. The hub then
+    // names the agent's own identity for that session: the cockpit puts it in the team (the hub hands the
+    // stand-in's route and rights over to it) and follows it.
+    for (const a of [...agents.values()]) {
+      const p = projects.get(a.projectId);
+      if (!a.hubAgentId || a.hubTeam !== 'team' || !a.sessionId || !p?.hubConversationId) continue;
+      const harness = HUB_HARNESS[harnessOf(a)], sid = a.sessionId, was = a.hubAgentId;
+      const f = await hub.call('GET', `/v1/app/agents/by-session?harness=${encodeURIComponent(harness)}&sessionId=${encodeURIComponent(sid)}`);
+      const id = f.status === 200 ? f.json?.agentId : null;
+      if (!id || id === was) continue;
+      const b = await hub.call('POST', '/v1/app/bindings', { agentId: id, conversationId: p.hubConversationId });
+      if (b.status !== 200 || a.hubAgentId !== was || a.sessionId !== sid) continue;
+      a.hubAgentId = id; saveRoster(); emitAgent(a);
+    }
     await hubRoutes();
   } finally { hubSyncBusy = false; }
 }

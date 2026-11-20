@@ -146,6 +146,8 @@ export async function startFakeHub({ token = 'app_test_token', elsewhere = [] } 
   return {
     url, token, calls,
     push: f => { for (const s of streams) frame(s, f); },
+    // The agent's own bridge tools registered for this session: the hub now names that identity for it.
+    ownIdentity: (harness, sessionId, agentId) => bySession.set(`${harness}:${sessionId}`, agentId),
     streams: () => streams.size,
     dropStream: () => { for (const s of streams) s.destroy(); streams.clear(); },
     close: () => new Promise(r => { for (const s of streams) s.destroy(); server.close(r); }),
