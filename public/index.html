@@ -510,7 +510,7 @@ function renderHead() {
      ...MODEL_CHOICES.map(([v, t]) => h('option', { value: v, text: t, selected: cur === v })),
      cur && !MODEL_CHOICES.some(([v]) => v === cur) ? h('option', { value: cur, text: cur, selected: true }) : null,
      h('option', { value: 'custom', text: 'Other…' })].filter(Boolean)) : null;
-  const otherModel = watch && !claude ? toolModelButton(a) : null;
+  const otherModel = watch && !claude ? (a.harness === 'hermes' ? profileButton(a) : toolModelButton(a)) : null;
   const p = curProject(); const sub = p && a.cwd !== p.cwd ? a.cwdShort : null;
   els.head.append(...[
     h('span', { class: 'cs', text: a.name, title: 'Click to rename', onclick: () => { const n = prompt('Agent name', a.name); if (n && n.trim()) api('POST', `/api/agents/${a.id}/settings`, { name: n.trim() }).catch(x => toast(x.message)); } }),
@@ -563,6 +563,39 @@ function toolModelButton(a) {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') apply(); if (e.key === 'Escape') box.remove(); });
     const box = h('span', { class: 'model-pick' }, input, dl, go);
     b.after(box); input.focus(); input.select();
+  } });
+  return b;
+}
+// The Hermes profile of an agent: its own config, model and chats. Switching starts the agent's chat of the same
+// name in the other profile; the cockpit offers to reopen a window it opened so that happens now.
+let hermesProfiles = null;
+function loadProfiles() {
+  if (!hermesProfiles) hermesProfiles = api('GET', '/api/models?harness=hermes').then(d => d.profiles || []).catch(() => { hermesProfiles = null; return []; });
+  return hermesProfiles;
+}
+function profileLabel(p) { return (p.name || 'default') + (p.model ? ' · ' + p.model : ''); }
+function profileButton(a) {
+  const b = h('button', { class: 'btn sm', type: 'button', text: 'Profile: ' + (a.profile || 'default') + (a.modelLive ? ' · ' + a.modelLive : ''), title: `The Hermes profile ${a.name} runs in. Click to switch.`, onclick: async () => {
+    if (b.nextSibling && b.nextSibling.classList && b.nextSibling.classList.contains('model-pick')) { b.nextSibling.remove(); return; }
+    const sel = h('select', { 'aria-label': 'Hermes profile' }, (await loadProfiles()).map(p => h('option', { value: p.name, text: profileLabel(p), selected: p.name === (a.profile || '') })));
+    const apply = async () => {
+      const v = sel.value; if (v === (a.profile || '')) { box.remove(); return; }
+      const open = a.window === 'open' && !a.adopted;
+      const reopen = open && confirm(`Switch ${a.name} to the Hermes profile ${v || 'default'}?
+
+Each profile keeps its own chats: ${a.name} continues its chat of the same name there, or starts one. The chat in the current profile stays where it is.
+
+OK closes ${a.name}'s window and reopens it in the new profile now. Cancel keeps the window; the new profile is used the next time it opens.`);
+      go.disabled = true;
+      try {
+        const d = await api('POST', `/api/agents/${a.id}/profile`, { profile: v, reopen });
+        toast(d.applied === 'reopened' ? `${a.name} reopened in the profile ${v || 'default'}.` : `${a.name} uses the profile ${v || 'default'} the next time its window opens.`);
+        box.remove(); S.items.delete(a.id); renderMain();
+      } catch (x) { toast(x.message); go.disabled = false; }
+    };
+    const go = h('button', { class: 'btn sm primary', type: 'button', text: 'Switch', onclick: apply });
+    const box = h('span', { class: 'model-pick' }, sel, go);
+    b.after(box); sel.focus();
   } });
   return b;
 }
@@ -934,7 +967,8 @@ function micButton(ta) {
   const b = h('button', { class: 'btn mic', type: 'button', title: 'Dictate: click, speak, click again to stop', 'aria-pressed': 'false' }, icon, label);
   let rec = null;
   const stop = () => {
-    if (rec) { const r = rec; rec = null; r.onend = null; try { r.stop(); } catch { /* already stopped */ } }
+    // abort() drops what is still being recognized; the handlers go too, so a late result never refills the box.
+    if (rec) { const r = rec; rec = null; r.onend = null; r.onresult = null; r.onerror = null; try { r.abort(); } catch { /* already stopped */ } }
     b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic';
     if (S.micStop === stop) S.micStop = null;
   };
@@ -947,6 +981,7 @@ function micButton(ta) {
     const before = ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value;
     let said = '';
     r.onresult = e => {
+      if (rec !== r) return;
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) said += t; else interim += t; }
       ta.value = before + said + interim; ta.dispatchEvent(new Event('input'));
@@ -1110,24 +1145,30 @@ function viewNew() {
   const first = h('textarea', { id: 'new-first', rows: 3, placeholder: 'Optional. What should it start with?' });
   const tool = h('select', { id: 'new-tool' }, Object.entries(TOOLS).map(([k, v]) => h('option', { value: k, text: v })));
   const modeLabel = h('label', null, 'Permissions', mode);
+  const profile = h('select', { id: 'new-profile' }, h('option', { value: '', text: 'default' }));
+  const profileLabelEl = h('label', { hidden: true }, 'Hermes profile', profile);
+  const modelLabel = h('label', null, 'Model', model, custom);
   tool.addEventListener('change', () => {
     const claude = tool.value === 'claude';
     modeLabel.hidden = !claude;
     for (const o of model.options) o.hidden = !claude && !['', 'custom'].includes(o.value);
     if (!claude && !['', 'custom'].includes(model.value)) { model.value = ''; custom.hidden = true; }
     model.options[0].text = claude ? 'Default (as in Claude Code)' : `Default (as in ${TOOLS[tool.value]})`;
+    const hermes = tool.value === 'hermes';
+    profileLabelEl.hidden = !hermes; modelLabel.hidden = hermes;
+    if (hermes) loadProfiles().then(list => profile.replaceChildren(...list.map(p => h('option', { value: p.name, text: profileLabel(p) }))));
   });
   const win = S.platform === 'win32' ? 'PowerShell window' : 'terminal window';
   const form = h('form', { class: 'form', onsubmit: async e => {
     e.preventDefault(); err.textContent = '';
     try {
-      const d = await api('POST', '/api/agents', { projectId: p.id, name: name.value, harness: tool.value, model: model.value === 'custom' ? custom.value : model.value, permissionMode: mode.value, firstMessage: first.value });
+      const d = await api('POST', '/api/agents', { projectId: p.id, name: name.value, harness: tool.value, profile: tool.value === 'hermes' ? profile.value : '', model: tool.value === 'hermes' ? '' : model.value === 'custom' ? custom.value : model.value, permissionMode: mode.value, firstMessage: first.value });
       if (d.hint) toast(d.hint);
       S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar();
     } catch (x) { err.textContent = x.message; }
   } },
     h('label', { class: 'wide' }, 'Project', h('span', { class: 'fixed', text: `${p.name}  ·  ${p.cwd}` })),
-    h('label', null, 'Name', name), h('label', null, 'Tool', tool), h('label', null, 'Model', model, custom), modeLabel,
+    h('label', null, 'Name', name), h('label', null, 'Tool', tool), modelLabel, profileLabelEl, modeLabel,
     h('label', { class: 'wide' }, 'Where it runs', h('span', { class: 'fixed', text: `In its own ${win}. You see it there and talk to it here or there. It keeps running without the cockpit.` })),
     h('label', { class: 'wide' }, 'First message', first), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Launch' }), h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') })));
@@ -1146,14 +1187,14 @@ function viewResume() {
     if (!hit.length) return list.append(h('span', { class: 'sub', text: sessions.length ? 'No session matches.' : `No previous ${TOOLS[tool]} sessions were found for this folder.` }));
     for (const s of hit) {
       list.append(h('div', { class: 'it' },
-        h('div', { class: 'what' }, h('b', { text: s.title }), h('span', { text: [s.firstPrompt && s.firstPrompt !== s.title ? s.firstPrompt : null, s.gitBranch ? 'branch ' + s.gitBranch : null, s.cwd !== p.cwd ? s.cwdShort : null].filter(Boolean).join(' · ') || s.sessionId })),
+        h('div', { class: 'what' }, h('b', { text: s.title }), h('span', { text: [s.profile != null ? 'profile ' + (s.profile || 'default') : null, s.firstPrompt && s.firstPrompt !== s.title ? s.firstPrompt : null, s.gitBranch ? 'branch ' + s.gitBranch : null, s.cwd !== p.cwd ? s.cwdShort : null].filter(Boolean).join(' · ') || s.sessionId })),
         Date.now() - s.lastModified < 180000 ? h('span', { class: 'pill s-work', title: 'Changed in the last three minutes, so it is probably open in a terminal' }, h('span', { class: 'dot' }), 'active now') : null,
         h('span', { class: 'when', text: ago(s.lastModified) + (ago(s.lastModified) === 'now' ? '' : ' ago') }),
         s.agent ? h('span', { class: 'pill s-idle', text: 'in cockpit as ' + s.agent })
           : h('span', { class: 'acts' }, h('button', { class: 'btn sm primary', type: 'button', text: 'Add to roster',
               title: 'Show this session live in the roster. Open terminal then gives it its own window.', onclick: async ev => {
               ev.target.disabled = true;
-              try { const d = await api('POST', '/api/agents', { projectId: p.id, sessionId: s.sessionId, cwd: s.cwd, harness: tool, title: s.named ? s.title : '', name: s.named ? s.title : s.title.replace(/\s+/g, ' ').slice(0, 28) }); S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar(); }
+              try { const d = await api('POST', '/api/agents', { projectId: p.id, sessionId: s.sessionId, cwd: s.cwd, harness: tool, profile: s.profile || '', title: s.named ? s.title : '', name: s.named ? s.title : s.title.replace(/\s+/g, ' ').slice(0, 28) }); S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar(); }
               catch (x) { toast(x.message); ev.target.disabled = false; }
             } }))));
     }

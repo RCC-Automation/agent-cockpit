@@ -229,33 +229,66 @@ const opencode = {
   },
 };
 
-// ───────── Hermes: %LOCALAPPDATA%\hermes\state.db (or ~/.hermes/state.db) ─────────
+// ───────── Hermes: %LOCALAPPDATA%\hermes\state.db, and one state.db per profile in profiles\<name> ─────────
+// A profile is an isolated Hermes (its own config, model, skills and chats). `hermes -p <name>` runs in it.
 const HERMES_HOME = process.env.HERMES_HOME || [path.join(process.env.LOCALAPPDATA || '', 'hermes'), path.join(os.homedir(), '.hermes')].find(d => d && fs.existsSync(path.join(d, 'state.db'))) || path.join(os.homedir(), '.hermes');
 const HERMES_DB = path.join(HERMES_HOME, 'state.db');
 // Sessions a person can resume in a window; not cron, bots or the API. A chat in a terminal is saved as 'local'.
 const HERMES_SOURCES = "('local', 'cli', 'tui', 'desktop')";
+const PROFILE_NAME = /^[\w.-]{1,64}$/;
+const hermesDb = profile => profile ? path.join(HERMES_HOME, 'profiles', profile, 'state.db') : HERMES_DB;
+// The default Hermes ('') and every profile that has its own chats.
+function hermesHomes() {
+  const out = [{ profile: '', file: HERMES_DB }];
+  let names = []; try { names = fs.readdirSync(path.join(HERMES_HOME, 'profiles')); } catch { /* no profiles */ }
+  for (const n of names) if (PROFILE_NAME.test(n) && fs.existsSync(hermesDb(n))) out.push({ profile: n, file: hermesDb(n) });
+  return out.filter(h => fs.existsSync(h.file));
+}
+// The model a profile's config names (model: / default: in its config.yaml).
+function profileModel(profile) {
+  const file = profile ? path.join(HERMES_HOME, 'profiles', profile, 'config.yaml') : path.join(HERMES_HOME, 'config.yaml');
+  try { const m = /^model:[ \t]*\r?\n(?:[ \t]+.*\r?\n)*?[ \t]+default:[ \t]*["']?([^"'\r\n#]+)/m.exec(fs.readFileSync(file, 'utf8')); return m ? m[1].trim() : ''; }
+  catch { return ''; }
+}
+// Which profile holds a session: remembered once found.
+const hermesWhere = new Map();
+async function hermesFind(id) {
+  if (hermesWhere.has(id)) return hermesWhere.get(id);
+  for (const h of hermesHomes()) {
+    const d = await db(h.file);
+    try { if (d.prepare('SELECT 1 FROM sessions WHERE id = ?').get(id)) { hermesWhere.set(id, h.file); return h.file; } }
+    finally { d.close(); }
+  }
+  return null;
+}
 const hermes = {
   id: 'hermes', label: 'Hermes', bin: 'hermes',
+  // Every profile's sessions; each carries its `profile` ('' for the default Hermes).
   async sessions(cwd, since = 0) {
-    if (!fs.existsSync(HERMES_DB)) return [];
-    const d = await db(HERMES_DB);
-    try {
-      return d.prepare(`SELECT s.id, s.title, s.cwd, s.started_at, COALESCE((SELECT MAX(timestamp) FROM messages m WHERE m.session_id = s.id), s.last_activity_at, s.started_at) last
-        FROM sessions s WHERE s.source IN ${HERMES_SOURCES} AND s.parent_session_id IS NULL ORDER BY last DESC LIMIT 300`).all()
-        // Hermes often saves no folder for a terminal chat; such a session is offered in every folder.
-        .filter(s => s.last * 1000 >= since && (!cwd || !s.cwd || sameDir(s.cwd, cwd)))
-        .map(s => ({ sessionId: s.id, title: s.title || '(untitled)', cwd: s.cwd || '', lastModified: Math.round(s.last * 1000), createdAt: Math.round(s.started_at * 1000) }));
-    } finally { d.close(); }
+    const out = [];
+    for (const h of hermesHomes()) {
+      let d; try { d = await db(h.file); } catch { continue; }
+      try {
+        for (const s of d.prepare(`SELECT s.id, s.title, s.cwd, s.started_at, COALESCE((SELECT MAX(timestamp) FROM messages m WHERE m.session_id = s.id), s.last_activity_at, s.started_at) last
+          FROM sessions s WHERE s.source IN ${HERMES_SOURCES} AND s.parent_session_id IS NULL ORDER BY last DESC LIMIT 300`).all()) {
+          // Hermes often saves no folder for a terminal chat; such a session is offered in every folder.
+          if (s.last * 1000 < since || (cwd && s.cwd && !sameDir(s.cwd, cwd))) continue;
+          hermesWhere.set(s.id, h.file);
+          out.push({ sessionId: s.id, title: s.title || '(untitled)', cwd: s.cwd || '', lastModified: Math.round(s.last * 1000), createdAt: Math.round(s.started_at * 1000), profile: h.profile });
+        }
+      } catch { /* a profile whose database is older or locked: skipped */ } finally { d.close(); }
+    }
+    return out.sort((x, y) => y.lastModified - x.lastModified);
   },
   async stamp(id) {
-    if (!fs.existsSync(HERMES_DB)) return null;
-    const d = await db(HERMES_DB);
+    const file = await hermesFind(id); if (!file) return null;
+    const d = await db(file);
     try { const r = d.prepare('SELECT MAX(id) n, COUNT(*) c, (SELECT ended_at FROM sessions WHERE id = ?) e FROM messages WHERE session_id = ?').get(id, id); return r ? `${r.n}:${r.c}:${r.e || ''}` : null; }
     finally { d.close(); }
   },
   async read(id) {
-    if (!fs.existsSync(HERMES_DB)) return null;
-    const d = await db(HERMES_DB);
+    const file = await hermesFind(id); if (!file) return null;
+    const d = await db(file);
     try {
       const s = d.prepare('SELECT started_at, ended_at, last_activity_at, model FROM sessions WHERE id = ?').get(id); if (!s) return null;
       const rows = d.prepare('SELECT id, role, content, tool_calls, tool_call_id, tool_name, timestamp, finish_reason, reasoning_content, reasoning FROM messages WHERE session_id = ? AND active = 1 ORDER BY id').all(id);
@@ -284,18 +317,17 @@ const hermes = {
       return { items, info: s.ended_at && !items.length ? null : infoFrom(items, busy), mtime, busy, model: s.model || '' };
     } finally { d.close(); }
   },
-  // Models this PC's Hermes sessions used, newest first: Hermes has no offline list of its own.
-  async models() {
-    if (!fs.existsSync(HERMES_DB)) return [];
-    const d = await db(HERMES_DB);
-    try { return d.prepare("SELECT model, MAX(started_at) t FROM sessions WHERE model IS NOT NULL AND model != '' GROUP BY model ORDER BY t DESC LIMIT 40").all().map(r => r.model); }
-    finally { d.close(); }
+  // The profiles to choose from: the default Hermes and each profile folder, with the model its config names.
+  profiles() {
+    let names = []; try { names = fs.readdirSync(path.join(HERMES_HOME, 'profiles')).filter(n => PROFILE_NAME.test(n) && fs.existsSync(path.join(HERMES_HOME, 'profiles', n, 'config.yaml'))); } catch { /* none */ }
+    return [{ name: '', model: profileModel('') }, ...names.sort().map(n => ({ name: n, model: profileModel(n) }))];
   },
-  // Hermes switches with "/model <name>" typed in its window (for this session only).
+  // Hermes switches model with "/model <name>" typed in its window (for this session only).
   liveSwitch: true,
   // A new Hermes session is created under the agent's name, so the cockpit can find it again by that name.
+  // `-p <profile>` comes before the subcommand, as Hermes reads it first.
   args(a, first) {
-    const args = ['chat'];
+    const args = a.profile && PROFILE_NAME.test(a.profile) ? ['-p', a.profile, 'chat'] : ['chat'];
     if (a.sessionId) args.push('--resume', a.sessionId);
     else args.push('--continue', a.title || a.name, '--create-if-missing');
     if (a.model) args.push('-m', a.model);

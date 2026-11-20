@@ -122,7 +122,7 @@ function publicAgent(a) {
     id: a.id, projectId: a.projectId, name: a.name, mode: a.mode || 'own', cwd: a.cwd, cwdShort: shortPath(a.cwd), model: a.model || '', modelResolved: a.modelResolved || '', permissionMode: a.permissionMode || 'default',
     sessionId: a.sessionId || null, asleep: !wakeState(a), window: termKnown(a) ? (a.term.alive === false ? 'closed' : 'open') : null, talk: canTalk(a), adopted: !!(a.term && a.term.adopted && a.term.alive !== false), liveMode: r.watch.mode || null, status: r.status, last: a.last || '', updatedAt: a.updatedAt || a.createdAt,
     login: a.login || null, cost: r.watch.cost || 0, harness: harnessOf(a), harnessLabel: HARNESS_LABELS[harnessOf(a)],
-    modelLive: otherTool(a) ? (r.watch.model || '') : '', liveSwitch: otherTool(a) ? !!otherTool(a).liveSwitch : true,
+    modelLive: otherTool(a) ? (r.watch.model || '') : '', profile: a.profile || '', liveSwitch: otherTool(a) ? !!otherTool(a).liveSwitch : true,
   };
 }
 
@@ -625,6 +625,7 @@ async function attachOther(a, tool) {
   let list; try { list = await tool.sessions(a.cwd, a.term.openedAt - 60_000); } catch { return; }
   const name = (a.title || a.name).toLowerCase();
   const fresh = Date.now() - a.term.openedAt < 30 * 60_000;
+  if (list.some(x => 'profile' in x)) list = list.filter(x => (x.profile || '') === (a.profile || ''));
   const s = list.find(x => !used.has(x.sessionId) && x.title.toLowerCase() === name)
     || (fresh ? list.filter(x => !used.has(x.sessionId) && x.createdAt >= a.term.openedAt - 15_000).sort((x, y) => x.createdAt - y.createdAt)[0] : null);
   if (!s) return;
@@ -1267,9 +1268,9 @@ const routes = {
   // The models a tool offers, for the model menu of its agents.
   'GET /api/models': async (req, res, url) => {
     const tool = HARNESSES[url.searchParams.get('harness') || ''];
-    if (!tool || !tool.models) return json(res, 200, { models: [] });
-    let models = []; try { models = await tool.models(); } catch { /* an empty menu, typed names still work */ }
-    json(res, 200, { models });
+    if (!tool) return json(res, 200, { models: [] });
+    let models = []; try { if (tool.models) models = await tool.models(); } catch { /* an empty menu, typed names still work */ }
+    json(res, 200, { models, profiles: tool.profiles ? tool.profiles() : null });
   },
   'GET /api/state': async (req, res) => {
     json(res, 200, { projects: [...projects.values()].map(publicProject), agents: [...agents.values()].map(publicAgent), home: os.homedir(), platform: process.platform, tokenRequired: !!TOKEN });
@@ -1292,7 +1293,7 @@ const routes = {
     const tool = HARNESSES[url.searchParams.get('harness') || ''];
     if (tool) {
       let list = []; try { list = await tool.sessions(dir || null); } catch (e) { return json(res, 200, { sessions: [], error: `${tool.label}: ${e.message}` }); }
-      return json(res, 200, { sessions: list.slice(0, limit).map(s => ({ sessionId: s.sessionId, title: s.title, named: false, firstPrompt: s.title, cwd: s.cwd, cwdShort: shortPath(s.cwd), gitBranch: '', lastModified: s.lastModified, agent: inRoster.get(s.sessionId) || null, harness: tool.id })) });
+      return json(res, 200, { sessions: list.slice(0, limit).map(s => ({ sessionId: s.sessionId, title: s.title, named: false, firstPrompt: s.title, cwd: s.cwd, cwdShort: shortPath(s.cwd), gitBranch: '', lastModified: s.lastModified, agent: inRoster.get(s.sessionId) || null, harness: tool.id, profile: s.profile })) });
     }
     const list = await listSessions(dir ? { dir, limit } : { limit });
     json(res, 200, { sessions: list.map(s => ({
@@ -1353,6 +1354,7 @@ const routes = {
       permissionMode: PERMISSION_MODES.includes(b.permissionMode) ? b.permissionMode : (proj.permissionMode || 'default'),
       sessionId: b.sessionId || null, createdAt: Date.now(), updatedAt: Date.now(), cost: 0,
       mode: 'watch', title: String(b.title || '').trim(), ...(HARNESSES[b.harness] ? { harness: b.harness } : {}),
+      ...(b.harness === 'hermes' && /^[\w.-]{1,64}$/.test(String(b.profile || '')) ? { profile: String(b.profile) } : {}),
       last: b.sessionId ? 'Open terminal to continue it in its own window.' : 'Starting in a terminal window.',
     };
     if (a.title && proj.ignored) proj.ignored = proj.ignored.filter(t => t.toLowerCase() !== a.title.toLowerCase());
@@ -1444,6 +1446,28 @@ const agentRoutes = {
     await closeWindow(a);
     try { await openTerminal(a); } catch (e) { return json(res, 500, { error: e.message }); }
     touch(a, `Reopened with ${model}.`);
+    json(res, 200, { ok: true, applied: 'reopened' });
+  },
+  // Moves a Hermes agent to another profile (its own config, model and chats). A chat cannot move between
+  // profiles: the agent continues its chat of the same name in the new profile, or starts one there. With reopen,
+  // the cockpit closes the window it opened and starts the agent in the new profile.
+  'POST profile': async (a, req, res) => {
+    const b = await readBody(req);
+    if (harnessOf(a) !== 'hermes') return json(res, 400, { error: 'Only Hermes agents have profiles.' });
+    const profile = String(b.profile || '');
+    if (profile && !HARNESSES.hermes.profiles().some(p => p.name === profile)) return json(res, 400, { error: `No Hermes profile "${profile}".` });
+    if (profile === (a.profile || '')) return json(res, 200, { ok: true, applied: 'same' });
+    if (b.reopen && termKnown(a) && a.term.alive !== false) {
+      if (a.term.adopted) return json(res, 409, { error: `${a.name} runs in a window you opened yourself, so the cockpit does not close it.` });
+      if (rt(a.id).status === 'work') return json(res, 409, { error: `${a.name} is working. Switch when it has finished, so nothing is cut off.` });
+    }
+    a.profile = profile; a.sessionId = null; a.model = '';
+    const r = rt(a.id); r.watch = { mtime: 0, size: 0, info: null, cost: null, loadedMtime: -1 }; r.items = []; r.historyLoaded = false; attachTried.delete(a.id);
+    broadcast({ t: 'reset', agentId: a.id });
+    if (!b.reopen || !termKnown(a) || a.term.alive === false) { touch(a, `Uses the Hermes profile ${profile || 'default'} when its window opens.`); return json(res, 200, { ok: true, applied: 'next start' }); }
+    await closeWindow(a);
+    try { await openTerminal(a); } catch (e) { return json(res, 500, { error: e.message }); }
+    touch(a, `Reopened in the Hermes profile ${profile || 'default'}.`);
     json(res, 200, { ok: true, applied: 'reopened' });
   },
   // Answers a question that waits in the window: an answer with Enter, Enter alone, or Esc.
