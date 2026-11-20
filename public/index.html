@@ -586,9 +586,15 @@ function loadProfiles() {
   if (!hermesProfiles) hermesProfiles = api('GET', '/api/models?harness=hermes').then(d => d.profiles || []).catch(() => { hermesProfiles = null; return []; });
   return hermesProfiles;
 }
-function profileLabel(p) { return (p.name || 'default') + (p.model ? ' · ' + p.model : '') + (p.missing ? '  (model missing in Ollama)' : ''); }
+// A model name as people read it: Ollama's ":latest" tag and the "trial-" prefix of local builds left out.
+function shortModel(m) { return String(m || '').replace(/:latest$/, '').replace(/^trial-/, ''); }
+// The profile's name, and its model only when the name does not already say it.
+function profileLabel(p) {
+  const name = p.name || 'default', m = shortModel(p.model);
+  return name + (m && m !== name ? ' — ' + m : '') + (p.missing ? '  (model missing)' : '');
+}
 function profileButton(a) {
-  const b = h('button', { class: 'btn sm', type: 'button', text: 'Profile: ' + (a.profile || 'default') + (a.modelLive ? ' · ' + a.modelLive : ''), title: `The Hermes profile ${a.name} runs in. Click to switch.`, onclick: async () => {
+  const b = h('button', { class: 'btn sm', type: 'button', text: 'Profile: ' + (a.profile || 'default') + (a.modelLive && shortModel(a.modelLive) !== (a.profile || 'default') ? ' · ' + shortModel(a.modelLive) : ''), title: `The Hermes profile ${a.name} runs in. Click to switch.`, onclick: async () => {
     if (b.nextSibling && b.nextSibling.classList && b.nextSibling.classList.contains('model-pick')) { b.nextSibling.remove(); return; }
     const sel = h('select', { 'aria-label': 'Hermes profile' }, (await loadProfiles()).map(p => h('option', { value: p.name, text: profileLabel(p), selected: p.name === (a.profile || '') })));
     const apply = async () => {
