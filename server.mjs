@@ -630,6 +630,7 @@ async function attachOther(a, tool) {
     || (fresh ? list.filter(x => !used.has(x.sessionId) && x.createdAt >= a.term.openedAt - 15_000).sort((x, y) => x.createdAt - y.createdAt)[0] : null);
   if (!s) return;
   a.sessionId = s.sessionId; saveRoster(); emitAgent(a);
+  broadcast({ t: 'reset', agentId: a.id }); // the page loaded the empty chat before this session was found
 }
 async function pollOther(a, tool) {
   if (!a.sessionId) { await attachOther(a, tool); if (!a.sessionId) return; }
@@ -1270,7 +1271,7 @@ const routes = {
     const tool = HARNESSES[url.searchParams.get('harness') || ''];
     if (!tool) return json(res, 200, { models: [] });
     let models = []; try { if (tool.models) models = await tool.models(); } catch { /* an empty menu, typed names still work */ }
-    json(res, 200, { models, profiles: tool.profiles ? tool.profiles() : null });
+    json(res, 200, { models, profiles: tool.profiles ? await tool.profiles() : null });
   },
   'GET /api/state': async (req, res) => {
     json(res, 200, { projects: [...projects.values()].map(publicProject), agents: [...agents.values()].map(publicAgent), home: os.homedir(), platform: process.platform, tokenRequired: !!TOKEN });
@@ -1455,7 +1456,7 @@ const agentRoutes = {
     const b = await readBody(req);
     if (harnessOf(a) !== 'hermes') return json(res, 400, { error: 'Only Hermes agents have profiles.' });
     const profile = String(b.profile || '');
-    if (profile && !HARNESSES.hermes.profiles().some(p => p.name === profile)) return json(res, 400, { error: `No Hermes profile "${profile}".` });
+    if (profile && !(await HARNESSES.hermes.profiles()).some(p => p.name === profile)) return json(res, 400, { error: `No Hermes profile "${profile}".` });
     if (profile === (a.profile || '')) return json(res, 200, { ok: true, applied: 'same' });
     if (b.reopen && termKnown(a) && a.term.alive !== false) {
       if (a.term.adopted) return json(res, 409, { error: `${a.name} runs in a window you opened yourself, so the cockpit does not close it.` });

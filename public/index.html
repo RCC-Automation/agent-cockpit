@@ -573,7 +573,7 @@ function loadProfiles() {
   if (!hermesProfiles) hermesProfiles = api('GET', '/api/models?harness=hermes').then(d => d.profiles || []).catch(() => { hermesProfiles = null; return []; });
   return hermesProfiles;
 }
-function profileLabel(p) { return (p.name || 'default') + (p.model ? ' · ' + p.model : ''); }
+function profileLabel(p) { return (p.name || 'default') + (p.model ? ' · ' + p.model : '') + (p.missing ? '  (model missing in Ollama)' : ''); }
 function profileButton(a) {
   const b = h('button', { class: 'btn sm', type: 'button', text: 'Profile: ' + (a.profile || 'default') + (a.modelLive ? ' · ' + a.modelLive : ''), title: `The Hermes profile ${a.name} runs in. Click to switch.`, onclick: async () => {
     if (b.nextSibling && b.nextSibling.classList && b.nextSibling.classList.contains('model-pick')) { b.nextSibling.remove(); return; }

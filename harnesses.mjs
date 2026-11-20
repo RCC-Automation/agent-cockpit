@@ -247,8 +247,17 @@ function hermesHomes() {
 // The model a profile's config names (model: / default: in its config.yaml).
 function profileModel(profile) {
   const file = profile ? path.join(HERMES_HOME, 'profiles', profile, 'config.yaml') : path.join(HERMES_HOME, 'config.yaml');
-  try { const m = /^model:[ \t]*\r?\n(?:[ \t]+.*\r?\n)*?[ \t]+default:[ \t]*["']?([^"'\r\n#]+)/m.exec(fs.readFileSync(file, 'utf8')); return m ? m[1].trim() : ''; }
-  catch { return ''; }
+  let text = ''; try { text = fs.readFileSync(file, 'utf8'); } catch { return { model: '', baseUrl: '' }; }
+  const block = (/^model:[ \t]*\r?\n((?:[ \t]+.*(?:\r?\n|$))*)/m.exec(text) || [])[1] || '';
+  const val = key => ((new RegExp(`^[ \\t]+${key}:[ \\t]*["']?([^"'\\r\\n#]+)`, 'm').exec(block) || [])[1] || '').trim();
+  return { model: val('default'), baseUrl: val('base_url') };
+}
+// The models a local Ollama has, or null when none answers on that address (then nothing is marked).
+async function ollamaModels(baseUrl) {
+  const root = (baseUrl || '').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
+  if (!/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(root)) return null;
+  try { const r = await fetch(root + '/api/tags', { signal: AbortSignal.timeout(1500) }); if (!r.ok) return null; return new Set(((await r.json()).models || []).map(m => m.name)); }
+  catch { return null; }
 }
 // Which profile holds a session: remembered once found.
 const hermesWhere = new Map();
@@ -318,9 +327,17 @@ const hermes = {
     } finally { d.close(); }
   },
   // The profiles to choose from: the default Hermes and each profile folder, with the model its config names.
-  profiles() {
+  // A profile whose model is on a local Ollama that does not have it is marked `missing`: Hermes cannot answer there.
+  async profiles() {
     let names = []; try { names = fs.readdirSync(path.join(HERMES_HOME, 'profiles')).filter(n => PROFILE_NAME.test(n) && fs.existsSync(path.join(HERMES_HOME, 'profiles', n, 'config.yaml'))); } catch { /* none */ }
-    return [{ name: '', model: profileModel('') }, ...names.sort().map(n => ({ name: n, model: profileModel(n) }))];
+    const tags = new Map(), out = [];
+    for (const name of ['', ...names.sort()]) {
+      const { model, baseUrl } = profileModel(name);
+      if (baseUrl && !tags.has(baseUrl)) tags.set(baseUrl, await ollamaModels(baseUrl));
+      const have = baseUrl ? tags.get(baseUrl) : null;
+      out.push({ name, model, missing: !!(have && model && !have.has(model) && !have.has(model + ':latest')) });
+    }
+    return out;
   },
   // Hermes switches model with "/model <name>" typed in its window (for this session only).
   liveSwitch: true,
