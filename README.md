@@ -145,6 +145,21 @@ with `@Name`. You can do the same: `@REBE …` typed in any agent's chat goes to
 **Team talk** button shows the whole conversation of the project, with a box to write `@Name` or `@team`.
 Claude Code agents are told this rule when the cockpit opens their window.
 
+## iPhone (Tailscale)
+
+Use the cockpit from your iPhone, or any device of yours, through Tailscale. Nothing is opened to the internet
+or to your home network.
+
+1. Tailscale runs and is logged in on this PC and on the iPhone, with the same account.
+2. On this PC, run **`phone.cmd on`**. It prints the address, for example `https://my-pc.tail1234.ts.net:8446/`.
+3. Open that address in Safari on the iPhone. Share > **Add to Home Screen** makes it open like an app.
+
+`phone.cmd off` closes it again; `phone.cmd status` shows the address. `phone.cmd on` publishes the cockpit with
+Tailscale Serve (tailnet only, never Funnel) and writes `data/phone.json`. The cockpit then lets in a request for
+that exact address only when Tailscale says it comes from the same login as this PC. Another person on your
+tailnet, another address, or a page from another site is refused. Deleting `data/phone.json` shuts the phone out
+at once. Another port: set `COCKPIT_PHONE_PORT` (default `8446`) before `phone.cmd on`.
+
 ## Safety
 
 This page can make agents run commands on this PC. By default it only answers on this PC itself.

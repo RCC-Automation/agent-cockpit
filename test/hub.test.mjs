@@ -186,9 +186,52 @@ describe('with a hub', () => {
     assert.ok(log.some(e => e.from === 'You' && e.to === 'BETA' && e.via === 'owner'));
   });
 
+  test("the owner's @Names count anywhere in a Team talk message, each named agent is tried", async () => {
+    const projectId = (await agentNamed(c, 'ALPHA')).projectId;
+    const r = await c.call('POST', '/api/team', { project: projectId, text: '@ALPHA can you see this? And you @beta?' });
+    assert.equal(r.status, 409);
+    assert.match(r.json.error, /ALPHA has no window/);
+    assert.match(r.json.error, /BETA has no window/);
+    const log = (await c.call('GET', `/api/team?project=${projectId}`)).json.entries;
+    assert.ok(log.some(e => e.via === 'owner' && e.to.split(', ').sort().join() === 'ALPHA,BETA' && e.text === '@ALPHA can you see this? And you @beta?'));
+  });
+
+  test("in an agent's chat, an @Name in the middle reaches that teammate and the chat's agent as well", async () => {
+    const alpha = await agentNamed(c, 'ALPHA');
+    const r = await c.call('POST', `/api/agents/${alpha.id}/message`, { text: 'hello, ask @BETA too' });
+    assert.match(r.json.error || '', /ALPHA/, 'ALPHA (no window here) is tried as well');
+    const log = (await c.call('GET', `/api/team?project=${alpha.projectId}`)).json.entries;
+    assert.ok(log.some(e => e.via === 'owner' && e.to === 'BETA' && e.text === 'hello, ask @BETA too'));
+  });
+
+  // Two agents can answer each other forever ("confirmed." "standing by." ...). After 6 agent messages
+  // with nothing from the owner, the cockpit holds the rest until the owner writes again.
+  test('agents answering each other are held after 6 messages until the owner writes', async () => {
+    const file = path.join(sessionFolder(c.config, teamCwd), `${ALPHA_SID}.jsonl`);
+    const before = sayCalls().length;
+    for (let i = 0; i < 8; i++) {
+      const line = { type: 'assistant', uuid: `u-loop-${i}`, isSidechain: false, sessionId: ALPHA_SID, cwd: teamCwd, message: { role: 'assistant', content: [{ type: 'text', text: `@beta confirmed ${i}.` }] } };
+      fs.appendFileSync(file, JSON.stringify(line) + '\n');
+      await new Promise(r => setTimeout(r, 400));
+    }
+    const projectId = (await agentNamed(c, 'ALPHA')).projectId;
+    const held = async () => (await c.call('GET', `/api/team?project=${projectId}`)).json.entries.filter(e => /held/.test(e.error || ''));
+    assert.ok(await until(async () => (await held()).length === 2, 15000), 'the 7th and 8th are held');
+    assert.equal(sayCalls().length - before, 6, 'only 6 go out');
+  });
+
   // Last in this group: it restarts the shared cockpit.
-  test('after a restart the project keeps its one team conversation', async () => {
+  test('after a restart the project keeps its one team conversation, and a message shows once, marked arrived', async () => {
+    const projectId = (await agentNamed(c, 'ALPHA')).projectId;
+    // The log as an older cockpit wrote it: the sent message, then the same words again when they arrived.
+    const at = Date.now();
+    fs.appendFileSync(path.join(c.data, 'team', `${projectId}.jsonl`),
+      JSON.stringify({ at, from: 'ALPHA', to: 'BETA', text: 'pair test', via: 'mention', ok: true }) + '\n'
+      + JSON.stringify({ at: at + 600, from: 'ALPHA', to: 'BETA', text: 'pair test', via: 'hub', ok: true }) + '\n');
     await c.restart();
+    const rows = (await c.call('GET', `/api/team?project=${projectId}`)).json.entries.filter(e => e.text === 'pair test');
+    assert.equal(rows.length, 1, 'one row');
+    assert.equal(rows[0].arrived, true);
     assert.ok(await until(async () => (await hubState(c)).state === 'connected', 20000));
     await new Promise(r => setTimeout(r, 2000));
     assert.equal(paths(fake, '/v1/app/conversations').length, 1, 'no second team chat');

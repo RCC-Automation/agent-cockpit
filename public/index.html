@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cockpit">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Cockpit</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
@@ -266,7 +270,12 @@ a.artlink svg{width:14px;height:14px;flex:none}
 .mic-lang{min-width:3em;font-variant-numeric:tabular-nums}
 .mic.on{border-color:var(--fail);color:var(--fail);background:color-mix(in srgb,var(--fail) 10%,var(--surface))}
 .mic.on svg{animation:pulse 1.2s ease-in-out infinite}
+.mic.busy{color:var(--accent)}
+.mic.busy svg{animation:pulse .8s ease-in-out infinite}
 @media (prefers-reduced-motion:reduce){.mic.on svg{animation:none}}
+/* Phone: the message box gets its own full line, and text in boxes is 16px so iPhone does not zoom in on a tap. */
+.c-send svg{display:none}
+@media (max-width:760px){input,select,textarea{font-size:16px}}
 .watchbar{flex-direction:row;align-items:center;gap:10px 14px;flex-wrap:wrap;background:var(--surface-2)}
 .watchbar span{flex:1 1 320px;color:var(--ink-2);font-size:.85rem}
 .cmds{position:absolute;left:12px;right:12px;bottom:100%;background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px rgb(0 0 0 / .18);max-height:240px;overflow:auto;padding:4px;z-index:5}
@@ -300,18 +309,73 @@ a.artlink svg{width:14px;height:14px;flex:none}
 .it.pick .where{font-size:.75rem;color:var(--ink-2);white-space:nowrap}
 .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:.85rem;z-index:20;max-width:90vw}
 
+.mbar,.drawer{display:none}
+.head-more{display:contents}
+/* Phone, like a chat app: a thin top bar (menu, the agent's name, its controls) and the chat on the whole screen.
+   The menu slides in from the left with the project, the agents and every button of the top bar. */
 @media (max-width:760px){
-  .body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
-  .rail{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}
-  .rail .grp{display:none}
-  .row{width:auto;flex:none;grid-template-columns:auto auto;box-shadow:0 0 0 1px var(--line)}
-  .row .last,.row .ago,.row .ctx{display:none}
-  .row .cs{max-width:140px}
+  .body{grid-template-columns:minmax(0,1fr)}
+  .mbar{display:flex;align-items:center;gap:6px;padding:6px 8px;padding-top:max(6px,env(safe-area-inset-top));border-bottom:1px solid var(--line);background:var(--surface);flex:none}
+  .mbtn{border:0;background:transparent;color:var(--ink);padding:8px;border-radius:8px;cursor:pointer;display:flex}
+  .mbtn[hidden]{display:none}
+  .mbtn:active{background:var(--surface-2)}
+  .mtitle{flex:1;min-width:0;display:flex;align-items:center;gap:8px;font-family:var(--mono);font-weight:600;font-size:1rem;overflow:hidden;white-space:nowrap}
+  .mtitle .t{overflow:hidden;text-overflow:ellipsis}
+  .mtitle .mdot{display:flex}
+  .drawer-in .bar > *{order:2}
+  .drawer-in .bar .name,.drawer-in #project,.drawer-in #btn-settings{order:0}
+  .drawer-in .bar .counts,.drawer-in .bar .conn{order:1;flex-basis:100%}
+  .drawer{display:block;position:fixed;inset:0;z-index:25;background:rgb(0 0 0 / .35);opacity:0;transition:opacity .2s}
+  .drawer.open{opacity:1}
+  .drawer[hidden]{display:none}
+  .drawer-in{position:absolute;top:0;left:0;bottom:0;width:min(86vw,360px);background:var(--surface-2);overflow-y:auto;display:flex;flex-direction:column;transform:translateX(-100%);transition:transform .22s ease;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);box-shadow:8px 0 30px rgb(0 0 0 / .25)}
+  .drawer.open .drawer-in{transform:none}
+  .drawer-in .bar{border-bottom:1px solid var(--line);background:transparent;gap:8px}
+  .drawer-in .bar select{max-width:none;flex:1}
+  .drawer-in .rail{border:0;background:transparent;overflow:visible}
+  .drawer-in .row{padding:10px 8px}
+  .head{display:none}
+  .head.open{display:flex}
+  .head > .cs,.head > .pill{display:none}
+}
+@media (max-width:760px) and (prefers-reduced-motion:reduce){.drawer,.drawer-in{transition:none}}
+/* Phone look, like the ChatGPT and Codex apps: round see-through buttons float over the chat, the text is
+   larger, and the message box is one rounded bar with +, the text, the microphone and a round send button. */
+@media (max-width:760px){
+  body{font-size:1.0625rem;font-family:-apple-system,BlinkMacSystemFont,system-ui,var(--body);-webkit-text-size-adjust:100%}
+  .mbar{position:fixed;top:0;left:0;right:0;z-index:8;border:0;background:transparent;pointer-events:none;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));gap:8px}
+  .mbar > *{pointer-events:auto}
+  .mbtn,.mtitle{background:color-mix(in srgb,var(--surface) 70%,transparent);-webkit-backdrop-filter:blur(16px) saturate(1.4);backdrop-filter:blur(16px) saturate(1.4);box-shadow:0 1px 8px rgb(0 0 0 / .16);border-radius:999px}
+  .mbtn{width:46px;height:46px;padding:0;align-items:center;justify-content:center}
+  .mtitle{flex:0 1 auto;margin-right:auto;padding:0 16px;height:46px}
+  .thread{padding:72px 16px 12px;gap:12px}
+  .main > .pane{padding-top:72px}
+  .head.open{padding-top:70px}
+  .head.open ~ .thread{padding-top:16px}
+  .composer{border-top:0;background:transparent;padding:6px 10px calc(8px + env(safe-area-inset-bottom))}
+  .composer .line{flex-wrap:nowrap;align-items:flex-end;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:28px;padding:5px;box-shadow:0 2px 14px rgb(0 0 0 / .14)}
+  .composer textarea{order:1;flex:1 1 auto;border:0;background:transparent;padding:11px 6px;min-height:44px;outline:none;box-shadow:none}
+  .composer .c-img{order:0}
+  .composer .mic-wrap{order:2}
+  .composer .c-send{order:3}
+  .composer .line .btn{border:0;background:transparent;width:44px;height:44px;padding:0;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:none}
+  .composer .line .btn .plus{font-size:1.6rem;font-weight:400;line-height:1}
+  .composer .mic svg{width:20px;height:20px}
+  .composer .lbl,.composer .line .mic-lang{display:none}
+  .composer .line .c-send{background:var(--accent);color:var(--accent-ink)}
+  .composer .c-send svg{display:block}
+  .composer .line .mic.on{background:color-mix(in srgb,var(--fail) 14%,transparent)}
 }
 </style>
 </head>
 <body>
-<div class="bar">
+<div class="mbar" id="mbar">
+  <button class="mbtn" id="btn-menu" type="button" aria-label="Agents and menu" aria-controls="drawer" aria-expanded="false"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+  <span class="mtitle" id="mtitle"></span>
+  <button class="mbtn" id="btn-more" type="button" aria-label="Agent controls" aria-expanded="false" hidden><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg></button>
+</div>
+<div class="drawer" id="drawer" hidden><div class="drawer-in" id="drawer-in" role="dialog" aria-label="Agents and menu"></div></div>
+<div class="bar" id="bar">
   <span class="name">Cockpit</span>
   <select id="project" aria-label="Project"></select>
   <button class="btn sm" id="btn-settings" type="button" title="Name, team notes and permissions of this project">Settings</button>
@@ -466,7 +530,7 @@ function renderBar() {
   $('btn-notify').hidden = !('Notification' in window) || Notification.permission !== 'default';
 }
 function renderRail() {
-  const rail = $('rail'); rail.textContent = '';
+  const rail = $('rail'); rail.textContent = ''; paintMbar();
   const team = teamOf(S.project);
   if (!team.length) { rail.append(h('div', { class: 'empty', text: S.project ? 'No agents in this project yet.' : 'Create a project to start.' })); return; }
   for (const s of ORDER) {
@@ -484,6 +548,7 @@ function renderRail() {
 // ───────── chat ─────────
 let els = {}; // live DOM references for the open chat
 function openAgent(id) {
+  closeDrawer();
   S.cur = id; S.view = 'chat'; S.attach = []; S.ctxOpen = false; // open files stay with their agent (filesOf)
   store.set('cockpit.agent.' + S.project, id);
   renderRail(); renderMain();
@@ -554,7 +619,7 @@ function renderHead() {
   els.head.append(...[
     h('span', { class: 'cs', text: a.name, title: 'Click to rename', onclick: () => { const n = prompt('Agent name', a.name); if (n && n.trim()) api('POST', `/api/agents/${a.id}/settings`, { name: n.trim() }).catch(x => toast(x.message)); } }),
     pill(a.status),
-    h('span', { class: 'meta', text: [sub, watch ? null : (a.modelResolved || a.model || 'default model'), a.login && !a.login.api ? a.login.label : null, a.cost ? '$' + a.cost.toFixed(2) : null].filter(Boolean).join(' · '), title: a.cwd }),
+    h('div', { class: 'head-more' }, ...[h('span', { class: 'meta', text: [sub, watch ? null : (a.modelResolved || a.model || 'default model'), a.login && !a.login.api ? a.login.label : null, a.cost ? '$' + a.cost.toFixed(2) : null].filter(Boolean).join(' · '), title: a.cwd }),
     a.login && a.login.api ? h('span', { class: 'pill s-failed', text: a.login.label, title: 'This agent is not using your Claude subscription' }) : null,
     watch ? h('span', { class: 'pill s-idle', text: a.window === 'closed' ? 'terminal window closed' : a.adopted ? 'runs in a window you opened' : a.window === 'open' ? 'runs in its terminal window' : 'runs in a terminal', title: a.adopted ? 'You opened this window yourself. The cockpit found it, can type into it, and never closes it' : 'The agent lives in a terminal window' }) : null,
     claude ? null : h('span', { class: 'pill tool-pill', text: a.harnessLabel, title: `This agent runs in ${a.harnessLabel}, not Claude Code` }),
@@ -567,7 +632,10 @@ function renderHead() {
     h('button', { class: 'btn sm', type: 'button', text: S.detail ? 'Group steps' : 'Show all steps', title: 'Fold commands, file reads and other tool calls into one line, or show each of them', onclick: () => { S.detail = !S.detail; store.set('cockpit.detail', S.detail ? '1' : ''); renderMain(); } }),
     a.window !== 'open' ? h('button', { class: 'btn sm primary', type: 'button', text: 'Open terminal', title: 'Open a terminal window for this agent. You then talk to it there or here.', onclick: () => openTerm(a) }) : null,
     h('button', { class: 'btn sm', type: 'button', text: 'Remove', title: 'Remove from the cockpit. The session stays on disk and can be resumed.', onclick: () => { if (confirm(`Remove ${a.name} from the cockpit?\nIts session stays on disk and can be resumed later.`)) api('DELETE', `/api/agents/${a.id}`).catch(x => toast(x.message)); } }),
+    ].filter(Boolean)),
   ].filter(Boolean));
+  els.head.classList.toggle('open', !!S.headOpen);
+  paintMbar();
   if (els.typing) { els.typing.hidden = a.status !== 'work'; els.typing.lastChild.textContent = `${a.name} is working`; }
 }
 // The model of a Codex, opencode or Hermes agent: what it uses now (read from its own history), and a box to
@@ -1063,9 +1131,13 @@ function renderCtx() {
 // Uses the speech recognition built into the browser (Chrome and Edge have it). Click to start, speak,
 // click again to stop. The words go into the message box as you speak; nothing is sent until you send it.
 const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+// iPhone and iPad (an iPad says "Macintosh" but has a touch screen).
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 const SPEECH_LANGS = { '': 'Follow the browser', 'en-US': 'English (US)', 'en-GB': 'English (UK)', 'es-ES': 'Español (España)', 'es-MX': 'Español (México)', 'de-DE': 'Deutsch', 'fr-FR': 'Français', 'it-IT': 'Italiano', 'pt-BR': 'Português (Brasil)' };
+// The round send button of the phone layout (an arrow); on a computer the button says Send.
+const SEND_ICON = () => { const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('width', '20'); svg.setAttribute('height', '20'); svg.setAttribute('aria-hidden', 'true'); const p = document.createElementNS(ns, 'path'); p.setAttribute('d', 'M12 19V5M5 12l7-7 7 7'); p.setAttribute('fill', 'none'); p.setAttribute('stroke', 'currentColor'); p.setAttribute('stroke-width', '2.4'); p.setAttribute('stroke-linecap', 'round'); p.setAttribute('stroke-linejoin', 'round'); svg.append(p); return svg; };
 function micButton(ta) {
-  const label = h('span', { text: 'Mic' });
+  const label = h('span', { class: 'lbl', text: 'Mic' });
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
   icon.innerHTML = '<path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6.5-3.5a1 1 0 1 0-2 0 4.5 4.5 0 0 1-9 0 1 1 0 1 0-2 0 6.5 6.5 0 0 0 5.5 6.42V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.08a6.5 6.5 0 0 0 5.5-6.42Z"/>';
@@ -1077,7 +1149,40 @@ function micButton(ta) {
     b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic';
     if (S.micStop === stop) S.micStop = null;
   };
+  // iPhone and iPad: the browser's own dictation is unreliable there and missing in a Home Screen app. The mic
+  // records instead; a second tap stops, and this PC turns the recording into text (Whisper).
+  let recorder = null, busy = false;
+  const record = async () => {
+    if (busy) return;
+    if (recorder) { recorder.stop(); return; }
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('This browser cannot record. Use the microphone key on the keyboard instead.');
+    let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch { return toast('The microphone is not allowed for this page. On iPhone: Settings > Safari > Microphone.'); }
+    if (S.micStop) S.micStop();
+    const chunks = [], mr = new MediaRecorder(stream); recorder = mr;
+    mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const cancelled = recorder !== mr; recorder = null;
+      if (cancelled || !chunks.length) return idle();
+      busy = true; b.classList.remove('on'); b.classList.add('busy'); label.textContent = 'Writing…'; b.setAttribute('aria-pressed', 'false');
+      const blob = new Blob(chunks, { type: mr.mimeType || 'audio/mp4' });
+      try {
+        const res = await fetch(`/api/transcribe?lang=${encodeURIComponent(store.get('cockpit.speech') || navigator.language || '')}`, { method: 'POST', headers: { 'content-type': (blob.type || 'audio/mp4').split(';')[0] }, body: blob });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.error || `Speech to text failed (${res.status})`);
+        if (d.text) { ta.value = (ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value) + d.text; ta.dispatchEvent(new Event('input')); ta.focus(); }
+        else toast('Nothing was heard.');
+      } catch (x) { toast(x.message); }
+      busy = false; idle();
+    };
+    mr.start();
+    b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); label.textContent = 'Listening';
+    S.micStop = () => { if (recorder === mr) { recorder = null; mr.stop(); } };
+  };
+  const idle = () => { b.classList.remove('on', 'busy'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic'; if (S.micStop && !recorder) S.micStop = null; };
   b.addEventListener('click', () => {
+    if (IOS || recorder || busy) return record();
     if (rec) return stop();
     if (!Speech) return toast('This browser has no built-in dictation. It works in Chrome and Edge.');
     if (S.micStop) S.micStop();
@@ -1124,6 +1229,7 @@ async function send(a, text, images, force) {
   try {
     const d = await api('POST', `/api/agents/${a.id}/message`, { text, images: images.map(i => ({ mediaType: i.mediaType, data: i.data })), force: !!force });
     // "@REBE …" went to a teammate instead of this agent.
+    if (d.alsoTo && (d.alsoTo.length || (d.skipped && d.skipped.length))) toast(`${d.alsoTo.length ? `Also sent to ${d.alsoTo.join(', ')}` : 'Only this agent got it'}${d.skipped && d.skipped.length ? `. Not sent: ${d.skipped.join('; ')}` : ''}.`);
     if (d.redirected) toast(`Sent to ${d.redirected.join(', ')}${d.skipped && d.skipped.length ? `. Not sent: ${d.skipped.join('; ')}` : ''}.`);
     return true;
   } catch (e) {
@@ -1218,19 +1324,53 @@ function composer(a) {
     const imgs = S.attach; S.attach = []; paint(); ta.value = ''; S.drafts.delete(a.id); grow(); menu.hidden = true;
     if (!(await send(a, text, imgs))) { ta.value = text; S.attach = imgs; paint(); }
   };
+  const at = atMenu(ta, () => teamOf(a.projectId).filter(x => x.id !== a.id).map(x => x.name));
   ta.addEventListener('input', () => { S.drafts.set(a.id, ta.value); grow(); suggest(); });
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } if (e.key === 'Escape') menu.hidden = true; });
   ta.addEventListener('paste', e => { const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/')); if (files.length) { e.preventDefault(); add(files); } });
   const file = h('input', { type: 'file', accept: 'image/*', multiple: '', hidden: true, onchange: e => { add([...e.target.files]); e.target.value = ''; } });
-  const wrap = h('div', { class: 'composer' }, menu, box,
+  const wrap = h('div', { class: 'composer' }, menu, at, box,
     h('div', { class: 'line' },
-      h('button', { class: 'btn', type: 'button', text: '+ Image', title: 'Attach an image. Paste and drag also work.', onclick: () => file.click() }), file, mic.el, ta,
-      h('button', { class: 'btn primary', type: 'button', text: 'Send', onclick: submit })));
+      h('button', { class: 'btn c-img', type: 'button', title: 'Attach an image. Paste and drag also work.', 'aria-label': 'Attach an image', onclick: () => file.click() }, h('span', { class: 'plus', text: '+' }), h('span', { class: 'lbl', text: ' Image' })), file, mic.el, ta,
+      h('button', { class: 'btn primary c-send', type: 'button', 'aria-label': 'Send', onclick: submit }, SEND_ICON(), h('span', { class: 'lbl', text: 'Send' }))));
   wrap.addEventListener('dragover', e => { e.preventDefault(); wrap.classList.add('drag'); });
   wrap.addEventListener('dragleave', () => wrap.classList.remove('drag'));
   wrap.addEventListener('drop', e => { e.preventDefault(); wrap.classList.remove('drag'); add([...e.dataTransfer.files]); });
   paint(); setTimeout(() => { grow(); if (window.innerWidth > 760) ta.focus(); }, 0);
   return wrap;
+}
+
+// "@" in a message box opens a list of the project's agents and @team. Arrows move, Enter or Tab or a click
+// puts the name in, Esc closes it. `names`: a function, so agents added later are offered too.
+function atMenu(input, names) {
+  const menu = h('div', { class: 'cmds', hidden: true, role: 'listbox', 'aria-label': 'Agents' });
+  let hits = [], sel = 0;
+  const at = () => /(^|[\s(,;])@([A-Za-z0-9_-]*)$/.exec(input.value.slice(0, input.selectionStart ?? input.value.length));
+  const pick = n => {
+    const m = at(); if (!m) return;
+    const end = input.selectionStart, start = end - m[2].length;
+    input.value = input.value.slice(0, start) + n + ' ' + input.value.slice(end);
+    const c = start + n.length + 1; input.setSelectionRange(c, c);
+    menu.hidden = true; input.focus(); input.dispatchEvent(new Event('input'));
+  };
+  const paint = () => {
+    menu.replaceChildren(...hits.map((n, i) => h('button', { type: 'button', role: 'option', class: i === sel ? 'on' : '', text: '@' + n + (n === 'team' ? '   (everyone)' : ''), onmousedown: e => { e.preventDefault(); pick(n); } })));
+    menu.hidden = !hits.length;
+  };
+  const update = () => {
+    const m = at(); if (!m) { hits = []; menu.hidden = true; return; }
+    const q = m[2].toLowerCase();
+    hits = [...names().filter(n => /^[A-Za-z0-9_-]{1,40}$/.test(n)), 'team'].filter(n => n.toLowerCase().startsWith(q)).slice(0, 20); sel = 0; paint();
+  };
+  input.addEventListener('input', update);
+  input.addEventListener('keydown', e => {
+    if (menu.hidden || !hits.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); sel = (sel + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length; paint(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); e.stopImmediatePropagation(); pick(hits[sel]); }
+    else if (e.key === 'Escape') { e.stopImmediatePropagation(); menu.hidden = true; }
+  }, true);
+  input.addEventListener('blur', () => setTimeout(() => { menu.hidden = true; }, 150));
+  return menu;
 }
 
 // ───────── other views ─────────
@@ -1374,7 +1514,7 @@ function viewTalk() {
   const row = e => h('div', { class: 'talk-row' + (e.ok === false ? ' failed' : '') },
     h('div', { class: 'talk-head' },
       h('b', { text: e.from || '?' }), h('span', { class: 'hint', text: ' → ' }), h('b', { text: e.to === 'team' ? 'everyone' : (e.to || '?') }),
-      h('span', { class: 'hint', text: `  ·  ${new Date(e.at).toLocaleTimeString()}${e.via === 'hub' ? '  ·  arrived' : ''}` })),
+      h('span', { class: 'hint', text: `  ·  ${new Date(e.at).toLocaleTimeString()}${e.via === 'hub' || e.arrived ? '  ·  arrived' : ''}` })),
     h('div', { class: 'talk-text', text: e.text || '' }),
     e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null);
   const paint = entries => {
@@ -1383,9 +1523,16 @@ function viewTalk() {
   };
   let entries = [];
   api('GET', `/api/team?project=${encodeURIComponent(p.id)}`).then(d => { entries = d.entries || []; paint(entries); }).catch(x => list.replaceChildren(h('span', { class: 'err', text: x.message })));
-  els.talkAdd = (projectId, e) => { if (projectId !== p.id) return; entries.push(e); paint(entries); };
+  // An entry that comes again (same id) is an update of its row, for example "arrived": it replaces the row.
+  els.talkAdd = (projectId, e) => {
+    if (projectId !== p.id) return;
+    const i = e.id ? entries.findIndex(x => x.id === e.id) : -1;
+    if (i >= 0) entries[i] = e; else entries.push(e);
+    paint(entries);
+  };
   const names = teamOf(p.id).map(a => a.name);
   const box = h('input', { class: 'find', type: 'text', id: 'talk-say', placeholder: `@${names[0] || 'Name'} your message   ·   @team for everyone`, 'aria-label': 'Write to an agent with @Name, or @team', autocomplete: 'off', style: 'flex:1 1 320px' });
+  const atList = atMenu(box, () => teamOf(p.id).map(a => a.name));
   const sendB = h('button', { class: 'btn primary', type: 'submit', text: 'Send' });
   const form = h('form', { class: 'acts', onsubmit: async ev => {
     ev.preventDefault();
@@ -1394,7 +1541,7 @@ function viewTalk() {
     try { const d = await api('POST', '/api/team', { project: p.id, text }); box.value = ''; if (d.skipped && d.skipped.length) toast('Not sent to: ' + d.skipped.join('; ')); }
     catch (x) { toast(x.message); }
     sendB.disabled = false; box.focus();
-  } }, box, sendB);
+  } }, h('div', { style: 'position:relative;flex:1 1 320px;display:flex' }, atList, box), sendB);
   const hubNote = S.hub && S.hub.state === 'connected' ? null
     : h('span', { class: 'hint', text: 'The Agent Hub is not connected, so agents cannot reach each other with @Name right now. What you write here still goes to their windows.' });
   setTimeout(() => box.focus(), 0);
@@ -1503,7 +1650,56 @@ function viewSettings() {
       h('button', { class: 'btn danger', type: 'button', text: 'Remove project', onclick: () => { if (confirm(`Remove the project "${p.name}" and its agents from the cockpit?\nThe folder, all session files and all terminal windows stay untouched.`)) api('DELETE', `/api/projects/${p.id}`).catch(x => toast(x.message)); } })));
   return h('div', { class: 'pane' }, h('h2', { text: 'Project settings' }), form);
 }
-function go(view) { S.view = view; renderRail(); renderMain(); }
+function go(view) { S.view = view; renderRail(); renderMain(); closeDrawer(); }
+// ───────── phone layout ─────────
+// On a narrow screen the top bar and the agent list live in a menu that slides in from the left (the ☰ button,
+// or a swipe from the left edge). The same elements are moved, not copied, so every button keeps working.
+const PHONE = window.matchMedia('(max-width:760px)');
+function placeForScreen() {
+  const bar = $('bar'), rail = $('rail'), inner = $('drawer-in');
+  if (PHONE.matches) { if (bar.parentNode !== inner) inner.append(bar, rail); }
+  else if (bar.parentNode === inner) { document.querySelector('.body').prepend(rail); $('mbar').after(bar); closeDrawer(); }
+  paintMbar();
+}
+function openDrawer() {
+  if (!PHONE.matches) return;
+  const d = $('drawer'); d.hidden = false; $('btn-menu').setAttribute('aria-expanded', 'true');
+  requestAnimationFrame(() => d.classList.add('open'));
+  const cur = d.querySelector('.row[aria-current="true"]'); if (cur) cur.scrollIntoView({ block: 'nearest' });
+}
+function closeDrawer() {
+  const d = $('drawer'); if (d.hidden) return;
+  d.classList.remove('open'); $('btn-menu').setAttribute('aria-expanded', 'false');
+  setTimeout(() => { if (!d.classList.contains('open')) d.hidden = true; }, 230);
+}
+// The phone top bar: the open agent (name and status) or the view, and the button for the agent's controls.
+function paintMbar() {
+  const t = $('mtitle'); if (!t) return;
+  const a = S.view === 'chat' ? curAgent() : null;
+  const names = { new: 'New agent', settings: 'Settings', team: 'Team', talk: 'Team talk', resume: 'Sessions', project: 'Projects' };
+  t.replaceChildren(...(a ? [h('span', { class: 'mdot s-' + a.status, title: ST[a.status] }, h('span', { class: 'dot' })), h('span', { class: 't', text: a.name })]
+    : [h('span', { class: 't', text: names[S.view] || (curProject() ? curProject().name : 'Cockpit') })]));
+  const more = $('btn-more'); more.hidden = !a; more.setAttribute('aria-expanded', S.headOpen ? 'true' : 'false');
+}
+$('btn-menu').addEventListener('click', () => ($('drawer').hidden ? openDrawer() : closeDrawer()));
+$('btn-more').addEventListener('click', () => { S.headOpen = !S.headOpen; if (els.head) els.head.classList.toggle('open', S.headOpen); paintMbar(); });
+$('drawer').addEventListener('click', e => {
+  if (e.target === $('drawer')) return closeDrawer();
+  // Picking an agent or a view closes the menu; the project list, Aa and Notify keep it open.
+  const b = e.target.closest('button'); if (b && !['btn-look', 'btn-notify'].includes(b.id)) closeDrawer();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('drawer').hidden) closeDrawer(); });
+// A swipe right from the left edge opens the menu; a swipe left inside it closes it.
+let swipe = null;
+document.addEventListener('touchstart', e => { const t = e.touches[0]; swipe = { x: t.clientX, y: t.clientY, open: !$('drawer').hidden }; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (!swipe || !PHONE.matches) return; const t = e.changedTouches[0], dx = t.clientX - swipe.x, dy = Math.abs(t.clientY - swipe.y);
+  if (!swipe.open && swipe.x < 28 && dx > 60 && dy < 50) openDrawer();
+  else if (swipe.open && dx < -60 && dy < 50) closeDrawer();
+  swipe = null;
+}, { passive: true });
+PHONE.addEventListener('change', placeForScreen);
+placeForScreen();
 function selectProject(id, view) {
   S.project = id; store.set('cockpit.project', id || '');
   const team = teamOf(id); const remembered = store.get('cockpit.agent.' + id);

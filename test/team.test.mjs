@@ -1,7 +1,7 @@
 // The @mention rules (team.mjs). Run with:  node --test test/team.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMentions, answerOfLine, teamHint } from '../team.mjs';
+import { parseMentions, answerOfLine, teamHint, ownerMentions } from '../team.mjs';
 
 const names = ['REBE', 'Pancho', 'FABY'];
 
@@ -39,4 +39,25 @@ test('the hint names the teammates and the rule', () => {
   assert.match(h, /REBE, FABY/);
   assert.match(h, /@Name/);
   assert.match(h, /@team/);
+});
+
+// The owner's own messages: every @Name anywhere in the text counts (the owner writes like in a chat).
+test("the owner's @Names count anywhere in the message", () => {
+  const m = ownerMentions('@COCKPIT can you see this message? And you @gemi? what about you @LUNA', ['COCKPIT', 'GEMI', 'LUNA', 'REBE']);
+  assert.deepEqual(m.names, ['COCKPIT', 'GEMI', 'LUNA']);
+  assert.equal(m.leading, 'COCKPIT');
+  assert.equal(m.all, false);
+});
+
+test("an owner's single leading @Name is taken off the words; with several the text stays as written", () => {
+  assert.equal(ownerMentions('@REBE is the render done?', ['REBE']).words, 'is the render done?');
+  assert.equal(ownerMentions('@REBE ask @FABY too', ['REBE', 'FABY']).words, '@REBE ask @FABY too');
+  assert.equal(ownerMentions('hello @REBE', ['REBE']).words, 'hello @REBE');
+});
+
+test('@team anywhere, and what is not a mention for the owner', () => {
+  assert.equal(ownerMentions('tell @team to stop', ['REBE']).all, true);
+  const m = ownerMentions('mail me at raul@REBE.com or run `@REBE x`, @NOBODY', ['REBE']);
+  assert.deepEqual(m.names, []);
+  assert.equal(m.all, false);
 });

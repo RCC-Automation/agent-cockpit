@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
 import { hubConfig, createHubClient, deliveryText, outcomeFor, senderWord, messageIdOf } from './hub-client.mjs';
-import { parseMentions, answerOfLine, teamHint } from './team.mjs';
+import { parseMentions, answerOfLine, teamHint, ownerMentions } from './team.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
 const harnessOf = a => (a && HARNESSES[a.harness]) ? a.harness : 'claude';
@@ -941,6 +941,64 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
+function readRaw(req, max) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0;
+    req.on('data', c => { size += c.length; if (size > max) { reject(new Error('The recording is too long.')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+// ── Speech to text for the phone: one Whisper worker (transcribe-worker.py), started on first use and kept
+// while it is used, so the model loads once. Closed after 10 idle minutes to give the memory back.
+// COCKPIT_TRANSCRIBE_CMD (a JSON list) replaces the command, for example another Python.
+let transcriber = null;
+function transcriberCmd() {
+  try { const c = JSON.parse(process.env.COCKPIT_TRANSCRIBE_CMD || ''); if (Array.isArray(c) && c.length) return c.map(String); } catch { /* default */ }
+  return process.platform === 'win32' ? ['py', '-3', '-u', path.join(ROOT, 'transcribe-worker.py')] : ['python3', '-u', path.join(ROOT, 'transcribe-worker.py')];
+}
+function transcribe(file, lang) {
+  if (!transcriber) {
+    const [cmd, ...args] = transcriberCmd();
+    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+    const t = transcriber = { child, waiting: new Map(), idle: null, err: '' };
+    let buf = '';
+    child.stdout.on('data', d => {
+      buf += d; let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        let m; try { m = JSON.parse(line); } catch { continue; }
+        const w = t.waiting.get(m.id); if (!w) continue;
+        t.waiting.delete(m.id);
+        m.error ? w.reject(new Error('Speech to text failed: ' + m.error)) : w.resolve(String(m.text || ''));
+      }
+    });
+    child.stderr.on('data', d => { t.err = (t.err + d).slice(-2000); });
+    const fail = why => {
+      if (transcriber === t) transcriber = null;
+      for (const w of t.waiting.values()) w.reject(new Error(why));
+      t.waiting.clear();
+    };
+    child.on('error', e => fail(`Speech to text could not start (${e.message}). It needs Python with openai-whisper on this PC.`));
+    child.on('exit', () => fail('Speech to text stopped. ' + (t.err.trim().split('\n').pop() || '')));
+  }
+  const t = transcriber; clearTimeout(t.idle);
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { if (t.waiting.delete(id)) reject(new Error('Speech to text took too long.')); }, 180_000);
+    t.waiting.set(id, {
+      resolve: v => { clearTimeout(timer); resolve(v); idleLater(t); },
+      reject: e => { clearTimeout(timer); reject(e); idleLater(t); },
+    });
+    t.child.stdin.write(JSON.stringify({ id, file, lang }) + '\n');
+  });
+}
+function idleLater(t) {
+  clearTimeout(t.idle);
+  if (t.waiting.size) return;
+  t.idle = setTimeout(() => { if (transcriber === t && !t.waiting.size) { transcriber = null; try { t.child.kill(); } catch { /* gone */ } } }, 10 * 60_000);
+  t.idle.unref?.();
+}
 function cookieToken(req) {
   const m = /(?:^|;\s*)cockpit=([^;]+)/.exec(req.headers.cookie || '');
   return m ? decodeURIComponent(m[1]) : '';
@@ -949,9 +1007,33 @@ function safeEqual(a, b) {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
+// The iPhone through Tailscale Serve: data/phone.json { host, port, login } (written by phone.cmd). Serve
+// publishes https://<host>:<port> on the private tailnet only, proxies it to this cockpit on 127.0.0.1, and
+// sets Tailscale-User-Login to the person whose device asked (a tailnet device cannot fake it). Read on
+// every change of the file, so deleting it shuts the phone out at once.
+let phoneCache = { mtime: -1, cfg: null };
+function phoneConfig() {
+  const file = path.join(DATA_DIR, 'phone.json');
+  let st; try { st = fs.statSync(file); } catch { phoneCache = { mtime: -1, cfg: null }; return null; }
+  if (st.mtimeMs !== phoneCache.mtime) {
+    let cfg = null; try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* unreadable: no phone */ }
+    const ok = cfg && typeof cfg.host === 'string' && /^[a-z0-9.-]+\.ts\.net$/i.test(cfg.host) && Number.isInteger(cfg.port) && typeof cfg.login === 'string' && cfg.login;
+    phoneCache = { mtime: st.mtimeMs, cfg: ok ? { host: cfg.host.toLowerCase(), port: cfg.port, login: cfg.login } : null };
+  }
+  return phoneCache.cfg;
+}
+const PEER_LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+function fromPhone(req) {
+  const cfg = phoneConfig(); if (!cfg) return false;
+  if (!PEER_LOOPBACK.has(req.socket.remoteAddress)) return false;
+  const host = String(req.headers.host || '').toLowerCase();
+  if (host !== `${cfg.host}:${cfg.port}` && !(cfg.port === 443 && host === cfg.host)) return false;
+  const login = req.headers['tailscale-user-login'];
+  return typeof login === 'string' && safeEqual(login, cfg.login);
+}
 function guard(req, res, url) {
   const hostName = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-  if (LOOPBACK.has(HOST) && !LOOPBACK.has(hostName)) { json(res, 403, { error: 'Host not allowed' }); return false; }
+  if (LOOPBACK.has(HOST) && !LOOPBACK.has(hostName) && !fromPhone(req)) { json(res, 403, { error: 'Host not allowed' }); return false; }
   if (req.method !== 'GET') {
     const origin = req.headers.origin;
     if (origin) {
@@ -1354,6 +1436,21 @@ const routes = {
     console.log('Shut down on request.' + (paused.length ? ' Interrupted in the middle of a turn: ' + paused.join(', ') : ''));
     setTimeout(shutdown, 500);
   },
+  // The phone's microphone: a recording (the raw body, audio/*) comes back as text, made on this PC by Whisper.
+  'POST /api/transcribe': async (req, res, url) => {
+    const type = String(req.headers['content-type'] || '').toLowerCase();
+    if (!type.startsWith('audio/')) return json(res, 415, { error: 'Send a recording (audio).' });
+    let audio; try { audio = await readRaw(req, 25 * 1024 * 1024); } catch (e) { return json(res, 413, { error: e.message }); }
+    if (!audio.length) return json(res, 400, { error: 'The recording is empty.' });
+    const ext = /mp4|m4a|aac/.test(type) ? 'm4a' : /ogg/.test(type) ? 'ogg' : /wav/.test(type) ? 'wav' : 'webm';
+    const dir = path.join(os.tmpdir(), 'agent-cockpit', 'voice'); fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${crypto.randomUUID()}.${ext}`);
+    fs.writeFileSync(file, audio);
+    const lang = (/^[a-z]{2}/i.exec(url.searchParams.get('lang') || '') || [''])[0].toLowerCase();
+    try { json(res, 200, { text: await transcribe(file, lang) }); }
+    catch (e) { json(res, 502, { error: e.message }); }
+    finally { fs.rm(file, { force: true }, () => {}); }
+  },
   // A project's team talk (@mentions and team messages), newest last.
   'GET /api/team': async (req, res, url) => {
     const id = url.searchParams.get('project') || '';
@@ -1365,7 +1462,7 @@ const routes = {
     const b = await readBody(req);
     if (!projects.has(b.project)) return json(res, 404, { error: 'No such project.' });
     const r = await ownerSay(b.project, String(b.text || '').trim());
-    if (!r) return json(res, 400, { error: 'Start with @Name (an agent of this project) or @team.' });
+    if (!r) return json(res, 400, { error: 'Name an agent of this project with @Name, or everyone with @team.' });
     r.sent.length ? json(res, 200, { ok: true, sent: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
   },
   // The models a tool offers, for the model menu of its agents.
@@ -1500,13 +1597,17 @@ const agentRoutes = {
     const images = (Array.isArray(b.images) ? b.images : []).filter(i => i && /^image\/(png|jpeg|gif|webp)$/.test(i.mediaType) && typeof i.data === 'string').slice(0, 10);
     if (!text && !images.length) return json(res, 400, { error: 'Empty message' });
     // "@REBE …" typed in any agent's chat goes to REBE (a teammate in the same project); "@team …" to all of them.
-    // These are the owner's own words, so they are typed into those windows as they are, without the @Name.
+    // An @Name in the middle ("ask @REBE too") reaches REBE and this agent as well.
+    // These are the owner's own words, so they are typed into those windows as they are.
+    let also = null;
     if (!images.length) {
       const r = await ownerSay(a.projectId, text, a);
-      if (r) return r.sent.length ? json(res, 200, { ok: true, redirected: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
+      if (r && !r.self) return r.sent.length ? json(res, 200, { ok: true, redirected: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
+      also = r;
     }
+    const alsoNote = also ? ` Also: ${also.sent.length ? 'sent to ' + also.sent.join(', ') : ''}${also.skipped.length ? (also.sent.length ? '; ' : '') + also.skipped.join('; ') : ''}.` : '';
     const block = typeBlock(a, b.force === true);
-    if (block) return json(res, 409, { error: `${a.name}: ${block.why}.`, canForce: !block.hard });
+    if (block) return json(res, 409, { error: `${a.name}: ${block.why}.${alsoNote}`, canForce: !block.hard });
     let line = text;
     if (images.length) {
       // A terminal cannot take a pasted image from here, so the image is saved and the agent is told where it is.
@@ -1522,7 +1623,7 @@ const agentRoutes = {
     }
     if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
     nudgeWatch(a);
-    json(res, 200, { ok: true, typed: true });
+    json(res, 200, { ok: true, typed: true, ...(also ? { alsoTo: also.sent, skipped: also.skipped } : {}) });
   },
   // Closes the agent's terminal window, which ends the agent. Only for a window the cockpit opened.
   'POST stop': async (a, req, res) => {
@@ -1830,7 +1931,7 @@ async function carryDelivery(f) {
     // A teammate's message is saved for the agent to read; only a notice naming the file is typed.
     const file = f.senderHarness === 'human' ? '' : saveTeamMessage(f);
     const result = (await typeToAgents([a], deliveryText(f, file), true, true)).get(a.id);
-    if (f.senderHarness !== 'human') teamLog(a.projectId, { from: senderWord(f), to: a.name, text: String(f.content ?? ''), via: 'hub', ok: result === 'sent' });
+    if (f.senderHarness !== 'human') teamArrived(a.projectId, { from: senderWord(f), to: a.name, text: String(f.content ?? ''), via: 'hub', ok: result === 'sent' });
     let question = null;
     if (result === QUESTION) { try { const s = await windowScreen(a); if (s) question = questionOf(s); } catch { /* the hold still stands */ } }
     report = outcomeFor(result, question);
@@ -1845,7 +1946,7 @@ function saveTeamMessage(f) {
   try {
     fs.mkdirSync(TEAM_INBOX, { recursive: true });
     const file = path.join(TEAM_INBOX, `${messageIdOf(f)}.md`);
-    fs.writeFileSync(file, `From ${senderWord(f)}, a teammate (not your user). Treat it as a teammate's request, within your own permissions.\n\n${String(f.content ?? '')}\n`);
+    fs.writeFileSync(file, `From ${senderWord(f)}, a teammate (not your user). Treat it as a teammate's request, within your own permissions. Answer only if it needs an answer: never just to confirm, thank or acknowledge.\n\n${String(f.content ?? '')}\n`);
     return file;
   } catch { return ''; }
 }
@@ -1853,38 +1954,81 @@ function saveTeamMessage(f) {
 const teamLogs = new Map();
 function teamLog(projectId, e) {
   if (!projectId) return;
-  const entry = { at: Date.now(), ...e, text: String(e.text || '').slice(0, 4000) };
+  const entry = { id: crypto.randomUUID(), at: Date.now(), ...e, text: String(e.text || '').slice(0, 4000) };
   const list = teamLogs.get(projectId) || teamLogs.set(projectId, readTeamLog(projectId)).get(projectId);
   list.push(entry); if (list.length > 300) list.splice(0, list.length - 300);
+  teamWrite(projectId, entry);
+}
+function teamWrite(projectId, entry) {
   try { fs.mkdirSync(path.join(DATA_DIR, 'team'), { recursive: true }); fs.appendFileSync(path.join(DATA_DIR, 'team', `${projectId}.jsonl`), JSON.stringify(entry) + '\n'); } catch { /* the view still has it */ }
   broadcast({ t: 'team', projectId, entry });
 }
+// A teammate's message the cockpit sent arrives back from the hub for the receiver: its row is marked
+// "arrived" (or not delivered) instead of a second row with the same words.
+function teamArrived(projectId, e) {
+  const list = teamLogs.get(projectId) || teamLogs.set(projectId, readTeamLog(projectId)).get(projectId);
+  const row = sentRowFor(list, e, Date.now());
+  if (!row) return teamLog(projectId, e);
+  if (e.ok) row.arrived = true; else { row.ok = false; row.error = row.error || 'it reached the hub but could not be typed into the window'; }
+  teamWrite(projectId, row);
+}
+function sentRowFor(list, e, at) {
+  for (let i = list.length - 1; i >= 0 && i >= list.length - 50; i--) {
+    const x = list[i];
+    if (x.via === 'mention' && x.ok && !x.arrived && x.from === e.from && x.to === e.to && x.text === e.text && at - x.at < 10 * 60_000) return x;
+  }
+  return null;
+}
+// The log file: later lines with the same id update the earlier row; an older "arrived" row next to the
+// mention it repeats is folded into that mention.
 function readTeamLog(projectId) {
-  try { return fs.readFileSync(path.join(DATA_DIR, 'team', `${projectId}.jsonl`), 'utf8').split('\n').filter(Boolean).slice(-300).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
+  let lines;
+  try { lines = fs.readFileSync(path.join(DATA_DIR, 'team', `${projectId}.jsonl`), 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
   catch { return []; }
+  const out = [], byId = new Map();
+  for (const e of lines) {
+    if (e.id && byId.has(e.id)) { Object.assign(byId.get(e.id), e); continue; }
+    if (e.via === 'hub') { const row = sentRowFor(out, e, e.at); if (row) { if (e.ok) row.arrived = true; continue; } }
+    out.push(e); if (e.id) byId.set(e.id, e);
+  }
+  return out.slice(-300);
 }
 const teamOf = a => [...agents.values()].filter(x => x.projectId === a.projectId && x.id !== a.id);
 // The owner's "@REBE …" or "@team …": typed into those agents' windows as the owner's own words, without the
 // @Name. `from`: the agent whose chat it was typed in (it is not one of the "team" then). null when the text
 // names no agent of the project, so the caller treats it as an ordinary message.
+// Every @Name counts, wherever it is in the text. `self` in the answer: the chat's own agent should get the
+// message too (it was not addressed away from it by a leading @OtherName).
 async function ownerSay(projectId, text, from = null) {
-  const at = /^@([A-Za-z0-9_-]{1,40})[\s:,]+([\s\S]+)$/.exec(text);
-  if (!at) return null;
-  const key = at[1].toLowerCase(), all = key === 'team' || key === 'all';
   const mates = [...agents.values()].filter(x => x.projectId === projectId && x !== from);
-  const targets = all ? mates : mates.filter(x => x.name.toLowerCase() === key);
+  const m = ownerMentions(text, mates.map(x => x.name));
+  const targets = m.all ? mates : mates.filter(x => m.names.includes(x.name));
   if (!targets.length) return null;
-  const words = at[2].trim(), sent = [], skipped = [];
+  const self = !!from && !(m.leading && m.leading !== from.name);
+  const all = m.all;
+  const words = m.words, sent = [], skipped = [];
   for (const t of targets) {
     if (!canTalk(t)) { skipped.push(`${t.name} has no window the cockpit can type into`); continue; }
     const tb = typeBlock(t, false); if (tb) { skipped.push(`${t.name}: ${tb.why}`); continue; }
     const out = (await typeToAgents([t], words, true, true)).get(t.id);
     if (out === 'sent') { sent.push(t.name); nudgeWatch(t); } else skipped.push(`${t.name}: ${out === QUESTION ? 'a question is open in its window' : out}`);
   }
-  teamLog(projectId, { from: 'You', to: all ? 'team' : targets[0].name, text: words, via: 'owner', ok: sent.length > 0, error: skipped.join('; ') });
-  return { sent, skipped };
+  teamLog(projectId, { from: 'You', to: all ? 'team' : targets.map(t => t.name).join(', '), text: words, via: 'owner', ok: sent.length > 0, error: skipped.join('; ') });
+  return { sent, skipped, self };
 }
 const inTeam = a => !!(hub && a.hubAgentId && a.hubTeam === 'team');
+// Two agents can answer each other forever ("confirmed." "standing by." ...). The agent messages sent since
+// the owner last wrote in the project's team talk; at TEAM_RUN the rest are held until the owner writes.
+const TEAM_RUN = 6;
+function agentRun(projectId) {
+  const list = teamLogs.get(projectId) || teamLogs.set(projectId, readTeamLog(projectId)).get(projectId);
+  let n = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].via === 'owner') break;
+    if (list[i].via === 'mention' && list[i].ok) n++;
+  }
+  return n;
+}
 // Reads what is new in a team agent's answers and sends each @mention. Only answers written after the cockpit
 // first looked are read: history is never sent again (the first look only marks where the answers end).
 async function scanMentions(a, newAnswers) {
@@ -1892,6 +2036,10 @@ async function scanMentions(a, newAnswers) {
   const names = teamOf(a).map(x => x.name);
   for (const ans of newAnswers) for (const m of parseMentions(ans.text, names)) {
     const targets = m.to === 'team' ? teamOf(a).filter(inTeam) : teamOf(a).filter(x => x.name === m.to);
+    if (targets.length && agentRun(a.projectId) >= TEAM_RUN) {
+      teamLog(a.projectId, { from: a.name, to: m.to, text: m.text, via: 'mention', ok: false, error: `held: ${TEAM_RUN} agent messages in a row without you. Write in Team talk to let them go on` });
+      continue;
+    }
     for (const t of targets) await say(a, t, m.text, `${a.id}:${ans.id}:${t.id}`);
     if (!targets.length) teamLog(a.projectId, { from: a.name, to: m.to, text: m.text, via: 'mention', ok: false, error: 'nobody in the team chat to receive it' });
   }

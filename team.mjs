@@ -33,5 +33,29 @@ export function answerOfLine(line) {
 export function teamHint(names) {
   const list = names.length ? names.join(', ') : 'none yet';
   return `Your teammates in this project: ${list}. To reach one, start a paragraph of your answer with @Name `
-    + '(for example "@REBE is the render done?"); @team reaches all of them. Their answers come back to you the same way.';
+    + '(for example "@REBE is the render done?"); @team reaches all of them. Their answers come back to you the same way. '
+    + 'Do not answer a teammate just to confirm, thank or acknowledge: that starts an endless back and forth.';
+}
+
+// The owner's own message: every "@Name" anywhere in it counts, as in a chat (not inside `code`, not in an
+// e-mail address). `names`: the agents that can be named. Returns { names: [as in names], all: @team/@all
+// was written, leading: the name the text starts with or '', words: what to type }. With one leading @Name
+// and no other, the words are the text without it; otherwise the text stays as written.
+export function ownerMentions(text, names) {
+  const byLower = new Map(names.map(n => [String(n).toLowerCase(), n]));
+  const plain = String(text || '').replace(/```[\s\S]*?(```|$)/g, ' ').replace(/`[^`\n]*`/g, ' ');
+  const found = [], seen = new Set(); let all = false, count = 0;
+  for (const m of plain.matchAll(/(^|[^A-Za-z0-9_.@])@([A-Za-z0-9_-]{1,40})(?![A-Za-z0-9_.-]*[A-Za-z0-9_-])/g)) {
+    const key = m[2].toLowerCase();
+    if (key === 'team' || key === 'all') { all = true; count++; continue; }
+    const n = byLower.get(key);
+    if (!n) continue;
+    count++;
+    if (!seen.has(n)) { seen.add(n); found.push(n); }
+  }
+  const lead = /^\s*@([A-Za-z0-9_-]{1,40})[\s:,]+([\s\S]+)$/.exec(String(text || ''));
+  const leadKey = lead?.[1].toLowerCase();
+  const leading = lead ? (leadKey === 'team' || leadKey === 'all' ? 'team' : byLower.get(leadKey) || '') : '';
+  const words = leading && count === 1 ? lead[2].trim() : String(text || '').trim();
+  return { names: found, all, leading, words };
 }

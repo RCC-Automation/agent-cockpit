@@ -28,7 +28,7 @@ after(async () => { await c.stop(); });
 
 test('answers on its own address only, and refuses requests from other sites', async () => {
   assert.equal((await c.call('GET', '/api/health')).status, 200);
-  const foreignHost = await new Promise(resolve => http.get({ host: '127.0.0.1', port: c.port, path: '/api/state', headers: { host: 'evil.example' } }, r => resolve(r.statusCode)));
+  const foreignHost = await new Promise(resolve => http.get({ host: '127.0.0.1', port: c.port, path: '/api/state', headers: { host: 'evil.example' } }, r => { r.resume(); resolve(r.statusCode); }));
   assert.equal(foreignHost, 403);
   assert.equal((await c.call('POST', '/api/projects', { cwd }, { origin: 'http://evil.example' })).status, 403);
 });
