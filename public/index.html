@@ -273,6 +273,22 @@ details.peer[open] summary .t{display:none}
 .art .chev{width:14px;height:14px;color:var(--ink-3)}
 a.artlink{display:inline-flex;align-items:center;gap:4px;text-decoration:underline;text-underline-offset:2px}
 a.artlink svg{width:14px;height:14px;flex:none}
+.lmore{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;margin-left:3px;width:22px;height:20px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink-2);font-size:.85rem;line-height:1;cursor:pointer}
+.lmore:hover,.lmore:focus-visible{color:var(--ink);border-color:var(--ink-3)}
+.lmore.hov{opacity:0;transition:opacity .12s}
+a:hover + .lmore.hov,.lmore.hov:hover,.lmore.hov:focus-visible{opacity:1}
+@media (hover:none){.lmore.hov{display:none}}
+.lmore.big{width:38px;height:38px;border-radius:50%;font-size:1.05rem;flex:none}
+.artw{align-self:flex-start;display:flex;align-items:center;gap:8px;max-width:100%;min-width:0}
+.artw .art{min-width:0}
+.lmenu{position:fixed;z-index:40;min-width:250px;max-width:min(340px,calc(100vw - 16px));padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 12px 32px rgb(0 0 0 / .25);display:flex;flex-direction:column}
+.lm-h{font-size:.72rem;font-weight:700;color:var(--ink-3);padding:6px 10px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lm-i{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:transparent;padding:8px 10px;border-radius:8px;cursor:pointer;color:var(--ink)}
+.lm-i:hover:not(:disabled),.lm-i:focus-visible{background:color-mix(in srgb,var(--ink) 7%,transparent)}
+.lm-i:disabled{opacity:.5;cursor:default}
+.lm-ic{width:20px;text-align:center;color:var(--ink-2)}
+.lm-t{display:flex;flex-direction:column;min-width:0}
+.lm-t small{font-size:.72rem;color:var(--ink-3)}
 .mic.on{border-color:var(--fail);color:var(--fail);background:color-mix(in srgb,var(--fail) 10%,var(--surface))}
 .mic.on svg{animation:pulse 1.2s ease-in-out infinite}
 .mic.busy{color:var(--accent)}
@@ -556,7 +572,7 @@ function md(src, links) {
   const anchor = (url, label) => {
     const art = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+$/.test(unesc(url));
     if (art && label == null) label = esc((links && links[unesc(url)]) || 'Artifact');
-    return `<a href="${url}" target="_blank" rel="noopener noreferrer"${art ? ' class="artlink"' : ''}>${art ? ART_ICON : ''}${label == null ? url : label}</a>`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer"${art ? ' class="artlink"' : ''}>${art ? ART_ICON : ''}${label == null ? url : label}</a><button type="button" class="lmore${art ? '' : ' hov'}" data-url="${url}" aria-label="Where to open this link" title="Where to open">⋯</button>`;
   };
   const inline = s => {
     s = esc(s); const keep = [];
@@ -922,8 +938,50 @@ function artCard(it) {
     h('span', { class: 'tt', text: A.title }), h('span', { class: 'st', text: word }));
   b.insertAdjacentHTML('afterbegin', ART_ICON);
   b.insertAdjacentHTML('beforeend', '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m9 6 6 6-6 6"/></svg>');
-  return b;
+  if (!A.url && !local) return b;
+  return h('div', { class: 'artw' }, b, h('button', { class: 'lmore big', type: 'button', text: '⋯', title: 'Where to open', 'aria-label': 'Where to open ' + A.title,
+    onclick: e => linkMenu(e.currentTarget, A.url || local.url, A.title, local) }));
 }
+// The agent's own copy of a claude.ai artifact, from any card of this chat that published it.
+function localCopy(url) {
+  const a = curAgent(); if (!a || !url) return null;
+  const it = (S.items.get(a.id) || []).find(x => x.artifact && x.artifact.url === url && x.files && x.files[0]);
+  return it ? { ...it.files[0], link: url } : null;
+}
+// Where to open a link, as in the Claude app: next to the chat, in a new tab, or copy it. A click on the link
+// itself still opens it in a new tab. claude.ai does not let its pages show inside another page, so an artifact
+// opens next to the chat only from the agent's own copy.
+function linkMenu(btn, url, title, local = null) {
+  const old = document.querySelector('.lmenu'); if (old) { old.remove(); if (old.dataset.for === url) return; }
+  local = local || localCopy(url);
+  const claude = /^https:\/\/claude\.ai\//.test(url);
+  const here = !!curAgent() && (local || (!claude && /^https?:\/\//.test(url)));
+  const name = title || url.replace(/^https?:\/\//, '').slice(0, 60);
+  const close = () => { menu.remove(); document.removeEventListener('click', away, true); document.removeEventListener('keydown', esc); };
+  const item = (icon, text, fn, sub, off) => h('button', { class: 'lm-i', type: 'button', role: 'menuitem', disabled: !!off, onclick: () => { close(); fn(); } },
+    h('span', { class: 'lm-ic', 'aria-hidden': 'true', text: icon }), h('span', { class: 'lm-t' }, h('span', { text }), sub ? h('small', { text: sub }) : null));
+  const menu = h('div', { class: 'lmenu', role: 'menu', 'aria-label': 'Open ' + name, 'data-for': url },
+    h('div', { class: 'lm-h', text: name }),
+    item('◧', 'Open next to the chat', () => openPreview(local || { url, name, kind: 'page' }),
+      here ? (local ? (claude ? "The agent's own copy; data kept on claude.ai may be missing" : "The agent's own copy") : null) : (claude ? 'claude.ai does not allow this; no local copy here' : 'Open a chat first'), !here),
+    item('↗', 'Open in a new tab', () => window.open(url, '_blank', 'noopener')),
+    item('⧉', 'Copy link', () => copyText(url).then(ok => toast(ok ? 'Link copied.' : 'Could not copy the link.'))));
+  document.body.append(menu);
+  const r = btn.getBoundingClientRect(), mw = menu.offsetWidth, mh = menu.offsetHeight;
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - mw - 8)) + 'px';
+  menu.style.top = (r.bottom + mh + 8 > window.innerHeight ? Math.max(8, r.top - mh - 6) : r.bottom + 6) + 'px';
+  const away = e => { if (!menu.contains(e.target) && e.target !== btn) close(); };
+  const esc = e => { if (e.key === 'Escape') close(); };
+  setTimeout(() => { document.addEventListener('click', away, true); document.addEventListener('keydown', esc); }, 0);
+  menu.querySelector('.lm-i:not(:disabled)')?.focus();
+}
+// The ⋯ after a link in any message.
+document.addEventListener('click', e => {
+  const b = e.target.closest('button.lmore[data-url]'); if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const a = b.previousElementSibling;
+  linkMenu(b, b.dataset.url, a && a.tagName === 'A' ? a.textContent.trim() : '');
+});
 function isShowcase(it) {
   if (it.k === 'tool' && (it.name === 'Workflow' || (it.artifact && it.status !== 'err'))) return true;
   return it.k === 'tool' && it.files && it.files.length && it.input &&
@@ -992,7 +1050,7 @@ function paintPreview() {
     fetch(f.url).then(r => r.ok ? r.text() : r.json().then(j => Promise.reject(new Error(j.error || 'The file could not be read.'))))
       .then(t => { if (/\.md$/i.test(f.name)) body.innerHTML = md(t); else body.replaceChildren(h('pre', { text: t })); })
       .catch(x => { body.textContent = x.message; });
-  } else body = h('iframe', { src: f.url, title: f.name, ...(f.kind === 'html' ? { sandbox: 'allow-scripts allow-popups allow-forms allow-modals' } : {}) });
+  } else body = h('iframe', { src: f.url, title: f.name, ...(f.kind === 'html' ? { sandbox: 'allow-scripts allow-popups allow-forms allow-modals' } : f.kind === 'page' ? { sandbox: 'allow-scripts allow-same-origin allow-popups allow-forms allow-modals', referrerpolicy: 'no-referrer' } : {}) });
   pv.append(tabs, h('div', { class: 'pv-head' }, h('b', { text: f.name }),
       f.link ? h('a', { href: f.link, target: '_blank', rel: 'noopener noreferrer', text: 'Open on claude.ai' }) : null,
       h('a', { href: f.url, target: '_blank', rel: 'noopener', text: 'Open in a new tab' }),

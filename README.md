@@ -28,7 +28,9 @@ A small control station for your Claude Code agents. It runs on your own PC and 
   would show Claude Code's own warning; the cockpit passes Claude Code the setting that records your acceptance, so
   windows it opens start without that question.
 - **Artifacts and files.** An artifact an agent publishes, or a file it sends you, shows as a card in the chat. A click
-  opens it next to the chat: pages, images, video, audio, PDF and text. Every image, page or document an agent read
+  opens it next to the chat: pages, images, video, audio, PDF and text. The ⋯ next to an artifact or a link chooses where it opens: next to the chat, in a new tab, or copy the link
+  (a plain click opens a new tab). claude.ai does not let its pages show inside another page, so an artifact shows next
+  to the chat from the agent's own copy. Every image, page or document an agent read
   or wrote has a Preview button in its step.
 - **Broadcast.** In Team, send one message or command, such as `/clock-in`, to every ticked agent. An agent in a
   PowerShell window gets it typed into its window, if the cockpit opened that window and the agent is waiting for
