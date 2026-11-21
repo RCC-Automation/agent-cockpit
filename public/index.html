@@ -1152,18 +1152,24 @@ function micButton(ta) {
   // iPhone and iPad: the browser's own dictation is unreliable there and missing in a Home Screen app. The mic
   // records instead; a second tap stops, and this PC turns the recording into text (Whisper).
   let recorder = null, busy = false;
+  const report = (step, detail = '') => { fetch('/api/mic-log', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ step, detail: String(detail) }) }).catch(() => {}); };
   const record = async () => {
-    if (busy) return;
-    if (recorder) { recorder.stop(); return; }
+    if (busy) return report('tap', 'still writing the last one');
+    if (recorder) { report('stop', recorder.state); recorder.stop(); return; }
+    report('tap', `mediaDevices=${!!navigator.mediaDevices?.getUserMedia} MediaRecorder=${!!window.MediaRecorder} secure=${window.isSecureContext} standalone=${!!navigator.standalone} ua=${navigator.userAgent}`);
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('This browser cannot record. Use the microphone key on the keyboard instead.');
     let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch { return toast('The microphone is not allowed for this page. On iPhone: Settings > Safari > Microphone.'); }
+    catch (x) { report('denied', `${x.name}: ${x.message}`); return toast(`The microphone did not start (${x.name}). On iPhone: Settings > Safari > Microphone, or the aA button in the address bar > Website Settings.`); }
     if (S.micStop) S.micStop();
-    const chunks = [], mr = new MediaRecorder(stream); recorder = mr;
+    let mr; try { mr = new MediaRecorder(stream); } catch (x) { stream.getTracks().forEach(t => t.stop()); report('recorder', `${x.name}: ${x.message}`); return toast('Recording could not start: ' + x.message); }
+    const chunks = []; recorder = mr;
+    mr.onerror = e => report('recorder-error', e.error ? `${e.error.name}: ${e.error.message}` : 'unknown');
     mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     mr.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       const cancelled = recorder !== mr; recorder = null;
+      report('stopped', `cancelled=${cancelled} chunks=${chunks.length} bytes=${chunks.reduce((n, c) => n + c.size, 0)} type=${mr.mimeType}`);
+      if (!cancelled && !chunks.length) toast('Nothing was recorded.');
       if (cancelled || !chunks.length) return idle();
       busy = true; b.classList.remove('on'); b.classList.add('busy'); label.textContent = 'Writing…'; b.setAttribute('aria-pressed', 'false');
       const blob = new Blob(chunks, { type: mr.mimeType || 'audio/mp4' });
@@ -1173,10 +1179,11 @@ function micButton(ta) {
         if (!res.ok) throw new Error(d.error || `Speech to text failed (${res.status})`);
         if (d.text) { ta.value = (ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value) + d.text; ta.dispatchEvent(new Event('input')); ta.focus(); }
         else toast('Nothing was heard.');
-      } catch (x) { toast(x.message); }
+      } catch (x) { report('send', x.message); toast(x.message); }
       busy = false; idle();
     };
-    mr.start();
+    try { mr.start(); } catch (x) { stream.getTracks().forEach(t => t.stop()); recorder = null; report('start', `${x.name}: ${x.message}`); return toast('Recording could not start: ' + x.message); }
+    report('recording', mr.mimeType);
     b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); label.textContent = 'Listening';
     S.micStop = () => { if (recorder === mr) { recorder = null; mr.stop(); } };
   };

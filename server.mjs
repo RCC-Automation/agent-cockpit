@@ -1447,9 +1447,16 @@ const routes = {
     const file = path.join(dir, `${crypto.randomUUID()}.${ext}`);
     fs.writeFileSync(file, audio);
     const lang = (/^[a-z]{2}/i.exec(url.searchParams.get('lang') || '') || [''])[0].toLowerCase();
-    try { json(res, 200, { text: await transcribe(file, lang) }); }
-    catch (e) { json(res, 502, { error: e.message }); }
+    const t0 = Date.now();
+    try { const text = await transcribe(file, lang); console.log(`Speech to text: ${audio.length} bytes ${type} ${lang || 'auto'}, ${text.length} characters in ${Date.now() - t0} ms`); json(res, 200, { text }); }
+    catch (e) { console.log(`Speech to text failed: ${audio.length} bytes ${type}: ${e.message}`); json(res, 502, { error: e.message }); }
     finally { fs.rm(file, { force: true }, () => {}); }
+  },
+  // What the phone's microphone did, step by step, written to the log (a phone has no console to look at).
+  'POST /api/mic-log': async (req, res) => {
+    const b = await readBody(req).catch(() => ({}));
+    console.log(`Phone mic: ${String(b.step || '').slice(0, 40)} ${String(b.detail || '').replace(/s+/g, ' ').slice(0, 300)}`);
+    json(res, 200, { ok: true });
   },
   // A project's team talk (@mentions and team messages), newest last.
   'GET /api/team': async (req, res, url) => {
