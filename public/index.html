@@ -1218,16 +1218,24 @@ function micButton(ta) {
     };
     try { mr.start(); } catch (x) { stream.getTracks().forEach(t => t.stop()); recorder = null; report('start', `${x.name}: ${x.message}`); return toast('Recording could not start: ' + x.message); }
     report('recording', mr.mimeType);
+    settled = new Promise(r => { settle = r; });
     meter = startMeter(stream); showBar('rec');
     b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); label.textContent = 'Listening';
     S.micStop = () => { if (recorder === mr) { recorder = null; mr.stop(); } };
   };
-  const idle = () => { showBar(null); b.classList.remove('on', 'busy'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic'; if (S.micStop && !recorder) S.micStop = null; };
+  // One promise per recording, settled when its words are in the box (or it ended without words): what Send waits for.
+  let settled = null, settle = null;
+  const idle = () => { showBar(null); b.classList.remove('on', 'busy'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic'; if (S.micStop && !recorder) S.micStop = null; if (settle) { const s = settle; settle = null; s(); } };
   b.addEventListener('click', record);
-  // The composer stops a recording when the message is sent: what was said so far is dropped.
+  // Leaving the chat drops a recording (what was said so far is not written).
   const stop = () => { if (recorder) { const mr = recorder; recorder = null; mr.stop(); } };
+  // Send was pressed: stop a recording the normal way (its words are written) and wait until they are in the box.
+  const finish = () => {
+    if (recorder) { report('stop', 'by Send'); recorder.stop(); }
+    return (recorder || busy) && settled ? settled : Promise.resolve();
+  };
   const el = h('span', { class: 'mic-wrap' }, b);
-  return { el, stop };
+  return { el, stop, finish };
 }
 
 // ───────── composer ─────────
@@ -1324,8 +1332,11 @@ function composer(a) {
     menu.hidden = !hit.length;
   };
   const mic = micButton(ta);
+  let sending = false;
   const submit = async () => {
-    mic.stop();
+    if (sending) return;
+    // Send while the mic records (or still writes): the recording is finished and written first, then sent with it.
+    sending = true; try { await mic.finish(); } finally { sending = false; }
     const text = ta.value.trim(); if (!text && !S.attach.length) return;
     const imgs = S.attach; S.attach = []; paint(); ta.value = ''; S.drafts.delete(a.id); grow(); menu.hidden = true;
     if (!(await send(a, text, imgs))) { ta.value = text; S.attach = imgs; paint(); }
