@@ -2,7 +2,9 @@
 
 A small control station for your Claude Code agents. It runs on your own PC and opens in the browser.
 
-- **Projects.** A project is a folder plus the team of agents that works in it.
+- **Projects.** A project is a folder plus the team of agents that works in it. The folder is chosen, not typed: New project opens
+  a folder chooser (places such as Home and GitHub, the path to tap back, the folders to tap into, New folder here).
+  This PC lists its own folders, so it works the same from the iPhone.
 - **New agent.** Name it, pick a model and permission mode, launch. No terminal needed.
 - **Both at once.** An agent runs in its own PowerShell window, where you see every detail, and you talk to it in the
   cockpit chat as well. A message you send in the cockpit is typed into the agent's window. This works for windows

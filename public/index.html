@@ -347,6 +347,48 @@ a:hover + .lmore.hov,.lmore.hov:hover,.lmore.hov:focus-visible{opacity:1}
 .form .check{flex-direction:row;align-items:center;gap:8px;font-size:.85rem;font-weight:500;color:var(--ink)}
 .form .fixed{font-family:var(--mono);font-size:.8rem;font-weight:500;color:var(--ink);padding:7px 0}
 .err{color:var(--fail);font-weight:600}
+.fpl{display:flex;flex-direction:column;gap:5px}
+.fpl-t{font-size:.75rem;font-weight:600;color:var(--ink-2)}
+.fpf{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:1px dashed var(--ink-3);border-radius:10px;background:var(--surface-2);padding:12px 14px;cursor:pointer;color:var(--ink-2);font-weight:500}
+.fpf:hover{border-color:var(--accent)}
+.fpf.set{border-style:solid;border-color:color-mix(in srgb,var(--accent) 45%,var(--line));color:var(--ink);font-family:var(--mono);font-size:.85rem}
+.fpf-t{flex:1;min-width:0;overflow-wrap:anywhere}
+.fpf-c{flex:none;font-family:var(--body);font-size:.8rem;font-weight:700;color:var(--accent)}
+.fp-back{position:fixed;inset:0;z-index:50;background:rgb(0 0 0 / .45);display:flex;align-items:center;justify-content:center;padding:16px}
+.fp{width:min(600px,100%);height:min(640px,100%);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 20px 60px rgb(0 0 0 / .35);overflow:hidden}
+.fp-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 8px;font-size:1rem}
+.fp-x{border:0;background:transparent;font-size:1.5rem;line-height:1;cursor:pointer;color:var(--ink-2);width:36px;height:36px;border-radius:50%}
+.fp-x:hover{background:var(--surface-2)}
+.fp-places{display:flex;gap:6px;overflow-x:auto;padding:0 16px 8px;flex:none}
+.fp-place{flex:none;border:1px solid var(--line);background:var(--surface-2);border-radius:99px;padding:5px 12px;font-size:.8rem;font-weight:600;cursor:pointer;color:var(--ink)}
+.fp-place:hover{border-color:var(--accent)}
+.fp-crumbs{display:flex;align-items:center;gap:2px;overflow-x:auto;padding:6px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--surface-2);flex:none;white-space:nowrap}
+.fp-crumb{border:0;background:transparent;padding:4px 6px;border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:.8rem;color:var(--ink-2)}
+.fp-crumb:hover{background:var(--surface)}
+.fp-crumb.on{color:var(--ink);font-weight:700}
+.fp-sep{color:var(--ink-3)}
+.fp-err:empty{display:none}
+.fp-err{padding:8px 16px}
+.fp-list{flex:1;min-height:0;overflow-y:auto;padding:6px 8px;display:flex;flex-direction:column}
+.fp-row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:0;background:transparent;padding:10px 10px;border-radius:10px;cursor:pointer;color:var(--ink);font-size:.95rem}
+.fp-row:hover{background:color-mix(in srgb,var(--ink) 6%,transparent)}
+.fp-ic{width:24px;text-align:center;flex:none}
+.fp-n{flex:1;min-width:0;overflow-wrap:anywhere}
+.fp-chev{color:var(--ink-3);font-size:1.2rem}
+.fp-add,.fp-up{color:var(--accent);font-weight:600}
+.fp-add .fp-ic,.fp-up .fp-ic{font-weight:800}
+.fp-new{display:flex;align-items:center;gap:8px;padding:6px 10px;flex-wrap:wrap}
+.fp-new-in{flex:1 1 160px;min-width:0;border:1px solid var(--accent);border-radius:8px;padding:8px 10px;background:var(--surface)}
+.fp-empty{padding:16px 12px;color:var(--ink-3);font-size:.85rem}
+.fp-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line);flex:none}
+.fp-use{max-width:70%;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:760px){
+  .fp-back{padding:0;align-items:flex-end}
+  .fp{width:100%;height:92%;border-radius:18px 18px 0 0;border-bottom:0}
+  .fp-row{padding:13px 10px;font-size:1.05rem}
+  .fp-foot{padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+  .fp-foot .btn{padding:10px 16px;font-size:.95rem}
+}
 .list{display:flex;flex-direction:column;gap:6px;max-width:860px}
 /* Team talk is laid out like a chat: the talk scrolls, the message box stays at the bottom. */
 .talk-view{display:flex;flex-direction:column;flex:1;min-height:0}
@@ -443,7 +485,9 @@ a:hover + .lmore.hov,.lmore.hov:hover,.lmore.hov:focus-visible{opacity:1}
   .drawer-in .row{padding:10px 8px}
   .head{display:none}
   .head.open{display:flex}
-  .head > .cs,.head > .pill{display:none}
+  .head > .cs,.head > .pill,.head .meta{display:none}
+  #btn-more[aria-expanded="true"]{background:var(--accent);color:var(--accent-ink)}
+  .head.open{box-shadow:0 8px 20px rgb(0 0 0 / .18);position:relative;z-index:5}
 }
 @media (max-width:760px) and (prefers-reduced-motion:reduce){.drawer,.drawer-in{transition:none}}
 /* Phone look, like the ChatGPT and Codex apps: round see-through buttons float over the chat, the text is
@@ -689,7 +733,8 @@ function renderMain() {
   if (!a) return main.append(viewEmpty());
   els.head = h('div', { class: 'head' });
   els.ctxpanel = h('div', { class: 'ctxpanel', hidden: true });
-  els.thread = h('div', { class: 'thread' });
+  // A tap in the chat hides the agent controls the ⋯ opened (phone).
+  els.thread = h('div', { class: 'thread', onclick: () => { if (S.headOpen && PHONE.matches) { S.headOpen = false; els.head.classList.remove('open'); paintMbar(); } } });
   els.typing = h('div', { class: 'typing s-work', hidden: true }, h('span', { class: 'dot' }), h('span'));
   els.preview = h('aside', { class: 'preview', hidden: true, 'aria-label': 'Preview' });
   els.subs = h('aside', { class: 'preview subs', hidden: true, 'aria-label': 'Helpers' });
@@ -1638,7 +1683,13 @@ function viewResume() {
 function viewProject() {
   const err = h('span', { class: 'err wide' });
   const name = h('input', { type: 'text', id: 'proj-name', placeholder: 'for example Wiki', autocomplete: 'off' });
-  const cwd = h('input', { type: 'text', id: 'proj-cwd', placeholder: 'D:\\projects\\wiki   or   ~/projects/wiki', autocomplete: 'off', spellcheck: 'false' });
+  // The folder is chosen, never typed: the button opens the folder chooser (folderPicker).
+  let chosen = '';
+  const cwdLabel = h('span', { class: 'fpf-t', text: 'Choose a folder…' });
+  const cwd = h('button', { class: 'fpf', type: 'button', id: 'proj-cwd', onclick: () => folderPicker(chosen, p => {
+    chosen = p; cwdLabel.textContent = p; cwd.classList.add('set');
+    if (!name.value.trim()) name.value = p.split(/[\\/]/).filter(Boolean).pop() || '';
+  }) }, h('span', { class: 'fpf-i', 'aria-hidden': 'true', text: '📁' }), cwdLabel, h('span', { class: 'fpf-c', 'aria-hidden': 'true', text: 'Browse' }));
   const note = h('textarea', { id: 'proj-note', rows: 3, placeholder: 'Optional. Notes every agent in this project receives, for example the goal and the rules of the team.' });
   const auto = h('input', { type: 'checkbox', id: 'proj-auto', checked: true });
   const create = async body => {
@@ -1650,8 +1701,8 @@ function viewProject() {
       if (d.imported) toast(`${d.imported} agent${d.imported === 1 ? '' : 's'} added from this folder.`);
     } catch (x) { err.textContent = x.message; }
   };
-  const form = h('form', { class: 'form', onsubmit: e => { e.preventDefault(); create({ name: name.value, cwd: cwd.value, note: note.value }); } },
-    h('label', null, 'Project name', name), h('label', null, 'Project folder', cwd), h('label', { class: 'wide' }, 'Team notes', note),
+  const form = h('form', { class: 'form', onsubmit: e => { e.preventDefault(); if (!chosen) { err.textContent = 'Choose the project folder first.'; return cwd.click(); } create({ name: name.value, cwd: chosen, note: note.value }); } },
+    h('div', { class: 'wide fpl' }, h('span', { class: 'fpl-t', text: 'Project folder' }), cwd), h('label', null, 'Project name', name), h('label', { class: 'wide' }, 'Team notes', note),
     h('label', { class: 'wide check' }, auto, 'Show the named sessions of this folder in the roster automatically, also new ones'), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Create project' }), S.projects.length ? h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') }) : null));
   const sug = h('div', { class: 'list' });
@@ -1665,6 +1716,64 @@ function viewProject() {
   return h('div', { class: 'pane' }, h('h2', { text: S.projects.length ? 'New project' : 'Create your first project' }),
     h('span', { class: 'sub', text: 'A project is a folder and the team of agents that works in it. Every agent of the project starts in that folder, and its sessions are stored and resumed there.' }),
     form, sug);
+}
+// The folder chooser, like a phone's Files app: places on top, the way back as a path, the folders to tap into,
+// a new folder, and "Use this folder". This PC lists its folders (GET /api/dirs), so it works on the iPhone too.
+function folderPicker(start, onPick) {
+  document.querySelector('.fp-back')?.remove();
+  let cur = null;
+  const list = h('div', { class: 'fp-list', role: 'list' }), crumbs = h('div', { class: 'fp-crumbs' }), placesRow = h('div', { class: 'fp-places' });
+  const err = h('div', { class: 'err fp-err', role: 'status' });
+  const useB = h('button', { class: 'btn primary fp-use', type: 'button', disabled: true, onclick: () => { close(); onPick(cur.path); } }, 'Use this folder');
+  const close = () => { back.remove(); document.removeEventListener('keydown', esc); };
+  const esc = e => { if (e.key === 'Escape') close(); };
+  const open = async p => {
+    err.textContent = '';
+    let d; try { d = await api('GET', '/api/dirs' + (p ? '?path=' + encodeURIComponent(p) : '')); } catch (x) { err.textContent = x.message; return; }
+    cur = d; paint();
+    if (!placesRow.childElementCount) placesRow.append(...d.places.map(pl => h('button', { class: 'fp-place', type: 'button', text: pl.label, title: pl.path, onclick: () => open(pl.path) })));
+  };
+  // The path as steps you can tap: C:\ › Users › Barrul
+  const steps = p => {
+    const sep = p.includes('\\') ? '\\' : '/', parts = p.split(/[\\/]/).filter(Boolean), out = [];
+    let acc = sep === '/' ? '' : '';
+    parts.forEach((x, i) => { acc = i === 0 ? (sep === '\\' ? x + '\\' : '/' + x) : (acc.endsWith(sep) ? acc + x : acc + sep + x); out.push({ name: x, path: acc }); });
+    if (sep === '/') out.unshift({ name: '/', path: '/' });
+    return out;
+  };
+  const newRow = () => {
+    const input = h('input', { type: 'text', class: 'fp-new-in', placeholder: 'New folder name', 'aria-label': 'New folder name', autocomplete: 'off', spellcheck: 'false' });
+    const make = async () => {
+      err.textContent = '';
+      try { const d = await api('POST', '/api/dirs', { parent: cur.path, name: input.value }); await open(d.path); toast('Folder created.'); }
+      catch (x) { err.textContent = x.message; input.focus(); }
+    };
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); make(); } if (e.key === 'Escape') { e.stopPropagation(); paint(); } });
+    const row = h('div', { class: 'fp-new' }, h('span', { class: 'fp-ic', 'aria-hidden': 'true', text: '📁' }), input,
+      h('button', { class: 'btn primary sm', type: 'button', text: 'Create', onclick: make }),
+      h('button', { class: 'btn sm', type: 'button', text: 'Cancel', onclick: paint }));
+    list.firstChild ? list.firstChild.replaceWith(row) : list.append(row);
+    input.focus();
+  };
+  const paint = () => {
+    crumbs.replaceChildren(...steps(cur.path).flatMap((st, i, all) => [i ? h('span', { class: 'fp-sep', 'aria-hidden': 'true', text: '›' }) : null,
+      h('button', { class: 'fp-crumb' + (i === all.length - 1 ? ' on' : ''), type: 'button', text: st.name, onclick: () => open(st.path) })]).filter(Boolean));
+    crumbs.scrollLeft = crumbs.scrollWidth;
+    list.replaceChildren(...[
+      h('button', { class: 'fp-row fp-add', type: 'button', onclick: newRow }, h('span', { class: 'fp-ic', 'aria-hidden': 'true', text: '+' }), h('span', { class: 'fp-n', text: 'New folder here' })),
+      cur.parent ? h('button', { class: 'fp-row fp-up', type: 'button', onclick: () => open(cur.parent) }, h('span', { class: 'fp-ic', 'aria-hidden': 'true', text: '↑' }), h('span', { class: 'fp-n', text: 'Up one folder' })) : null,
+      ...cur.dirs.map(d => h('button', { class: 'fp-row', type: 'button', role: 'listitem', onclick: () => open(d.path) },
+        h('span', { class: 'fp-ic', 'aria-hidden': 'true', text: '📁' }), h('span', { class: 'fp-n', text: d.name }), h('span', { class: 'fp-chev', 'aria-hidden': 'true', text: '›' }))),
+      cur.dirs.length ? null : h('div', { class: 'fp-empty', text: 'No folders inside. Use this folder, or make a new one.' })].filter(Boolean));
+    list.scrollTop = 0;
+    useB.disabled = false; useB.textContent = `Use "${cur.name}"`;
+  };
+  const sheet = h('div', { class: 'fp', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Choose the project folder' },
+    h('div', { class: 'fp-head' }, h('b', { text: 'Choose the project folder' }), h('button', { class: 'fp-x', type: 'button', 'aria-label': 'Close', text: '×', onclick: () => close() })),
+    placesRow, crumbs, err, list, h('div', { class: 'fp-foot' }, h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => close() }), useB));
+  const back = h('div', { class: 'fp-back', onclick: e => { if (e.target === back) close(); } }, sheet);
+  document.body.append(back); document.addEventListener('keydown', esc);
+  open(start || '');
 }
 // All agents of the project in one list, to wake or remove the ones that are picked.
 function whereText(a) {
@@ -1856,7 +1965,10 @@ function paintMbar() {
   const names = { new: 'New agent', settings: 'Settings', team: 'Team', talk: 'Team talk', resume: 'Sessions', project: 'Projects' };
   t.replaceChildren(...(a ? [h('span', { class: 'mdot s-' + a.status, title: ST[a.status] }, h('span', { class: 'dot' })), h('span', { class: 't', text: a.name })]
     : [h('span', { class: 't', text: names[S.view] || (curProject() ? curProject().name : 'Cockpit') })]));
+  // ⋯ shows the agent's controls; while they are open it is an × that hides them again.
   const more = $('btn-more'); more.hidden = !a; more.setAttribute('aria-expanded', S.headOpen ? 'true' : 'false');
+  more.setAttribute('aria-label', S.headOpen ? 'Hide the agent controls' : 'Show the agent controls');
+  more.innerHTML = S.headOpen ? '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>' : '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg>';
 }
 $('btn-menu').addEventListener('click', () => ($('drawer').hidden ? openDrawer() : closeDrawer()));
 $('btn-more').addEventListener('click', () => { S.headOpen = !S.headOpen; if (els.head) els.head.classList.toggle('open', S.headOpen); paintMbar(); });

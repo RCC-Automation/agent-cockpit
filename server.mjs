@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
 import { hubConfig, createHubClient, deliveryText, outcomeFor, senderWord, messageIdOf } from './hub-client.mjs';
+import { listDirs, makeDir, places } from './dirs.mjs';
 import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart, isAck } from './team.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
@@ -1560,6 +1561,18 @@ const routes = {
     json(res, 200, { folders: folders.slice(0, 40).map(([p, e]) => ({ path: p, short: shortPath(p), sessions: e.count, last: e.last })) });
   },
 
+  // The folder chooser of New project: the folders inside one folder (default: the first place), and the places.
+  'GET /api/dirs': async (req, res, url) => {
+    const pl = places(), want = url.searchParams.get('path');
+    try { json(res, 200, { ...listDirs(want ? expandHome(want) : pl.find(p => p.label === 'GitHub')?.path || pl[0].path), places: pl }); }
+    catch (e) { json(res, 400, { error: e.message }); }
+  },
+  // A new folder inside one, from the chooser.
+  'POST /api/dirs': async (req, res) => {
+    const b = await readBody(req);
+    try { json(res, 200, { path: makeDir(expandHome(String(b.parent || '')), b.name) }); }
+    catch (e) { json(res, 400, { error: e.message }); }
+  },
   'POST /api/projects': async (req, res) => {
     const b = await readBody(req);
     if (!String(b.cwd || '').trim()) return json(res, 400, { error: 'Choose the project folder.' });
