@@ -1495,13 +1495,13 @@ const routes = {
     if (!projects.has(id)) return json(res, 404, { error: 'No such project.' });
     json(res, 200, { entries: teamLogs.get(id) || readTeamLog(id), hub: hubState() });
   },
-  // The owner writes in the Team talk view: "@REBE …" or "@team …".
+  // The owner writes in the Team talk view: "@REBE …" for REBE; "@team …" or no @Name at all for everyone.
   'POST /api/team': async (req, res) => {
     const b = await readBody(req);
     if (!projects.has(b.project)) return json(res, 404, { error: 'No such project.' });
     const images = imagesOf(b);
-    const r = await ownerSay(b.project, String(b.text || '').trim(), null, images.length ? saveImages('team', images) : []);
-    if (!r) return json(res, 400, { error: 'Name an agent of this project with @Name, or everyone with @team.' });
+    const r = await ownerSay(b.project, String(b.text || '').trim(), null, images.length ? saveImages('team', images) : [], true);
+    if (!r) return json(res, 400, { error: 'This project has no agents to write to.' });
     r.sent.length ? json(res, 200, { ok: true, sent: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
   },
   // The models a tool offers, for the model menu of its agents.
@@ -2042,13 +2042,14 @@ const teamOf = a => [...agents.values()].filter(x => x.projectId === a.projectId
 // An agent that got the owner's words answers in its own chat; that answer is shown in Team talk too (replyWatch).
 // A Codex, Hermes or other non-Claude agent never got the team rule when its window opened (only Claude Code takes
 // a system prompt from the cockpit), so its first team message in a session carries the rule.
-async function ownerSay(projectId, text, from = null, images = []) {
+// `everyone`: a text that names nobody goes to all of them (the Team talk box: no @Name means @team).
+async function ownerSay(projectId, text, from = null, images = [], everyone = false) {
   const mates = [...agents.values()].filter(x => x.projectId === projectId && x !== from);
   const m = ownerMentions(text, mates.map(x => x.name));
-  const targets = m.all ? mates : mates.filter(x => m.names.includes(x.name));
+  const all = m.all || (everyone && !m.names.length && !!(text || images.length));
+  const targets = all ? mates : mates.filter(x => m.names.includes(x.name));
   if (!targets.length) return null;
   const self = !!from && !(m.leading && m.leading !== from.name);
-  const all = m.all;
   const words = m.words, sent = [], skipped = [];
   const pics = images.length ? ' ' + images.map(f => `[Look at this image: ${f}]`).join(' ') : '';
   for (const t of targets) {

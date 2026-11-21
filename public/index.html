@@ -1552,7 +1552,7 @@ function viewTalk() {
       h('button', { class: 'btn sm primary', type: 'button', text: 'Let them continue', onclick: ev => goOn(ev.currentTarget) }))
     : e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null);
   const paint = entries => {
-    list.replaceChildren(...(entries.length ? entries.map(row) : [h('span', { class: 'sub', text: 'No team talk yet. An agent reaches a teammate by starting a paragraph of its answer with @Name; you can write here with @Name or @team.' })]));
+    list.replaceChildren(...(entries.length ? entries.map(row) : [h('span', { class: 'sub', text: 'No team talk yet. An agent reaches a teammate by starting a paragraph of its answer with @Name; what you write here goes to everyone, or to one agent with @Name.' })]));
     requestAnimationFrame(() => { const sc = list.closest('.talk-pane'); if (sc) sc.scrollTop = sc.scrollHeight; });
   };
   let entries = [];
@@ -1567,7 +1567,7 @@ function viewTalk() {
   const names = teamOf(p.id).map(a => a.name);
   // The same message box as an agent's chat: images, mic, the @ list. Pictures go to every agent named.
   const form = composer(null, {
-    key: 'talk:' + p.id, id: 'talk-say', placeholder: 'Write to @Name or @team',
+    key: 'talk:' + p.id, id: 'talk-say', placeholder: 'Write to everyone, or @Name for one',
     names: () => teamOf(p.id).map(a => a.name),
     send: async (text, imgs) => {
       try {

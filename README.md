@@ -145,7 +145,8 @@ paragraph to the end of the answer (or to the next `@Name` paragraph) through th
 of several paragraphs, like a song or a list, arrives whole. A teammate whose own bridge tools listen gets it directly; any other (Codex, Hermes)
 gets a one-line notice naming a file in `data/team/inbox` that holds the message, and answers the same way,
 with `@Name`. You can do the same: `@REBE …` typed in any agent's chat goes to REBE instead, and the
-**Team talk** button shows the whole conversation of the project, with a box to write `@Name` or `@team`.
+**Team talk** button shows the whole conversation of the project, with a box to write in: with `@Name` it goes
+to that agent, and without any `@Name` (or with `@team`) to every agent of the project.
 Claude Code agents are told this rule when the cockpit opens their window; Codex, Hermes and other agents get it
 with the first team message the cockpit types into their window. When you write to an agent with `@Name`, what it
 answers you shows in Team talk as well, until you write to it in its own chat.

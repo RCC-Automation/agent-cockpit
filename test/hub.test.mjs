@@ -186,6 +186,16 @@ describe('with a hub', () => {
     assert.ok(log.some(e => e.from === 'You' && e.to === 'BETA' && e.via === 'owner'));
   });
 
+  test('a Team talk message without any @Name goes to every agent of the project', async () => {
+    const projectId = (await agentNamed(c, 'ALPHA')).projectId;
+    const r = await c.call('POST', '/api/team', { project: projectId, text: 'hello everyone' });
+    assert.equal(r.status, 409);
+    assert.match(r.json.error, /ALPHA has no window/);
+    assert.match(r.json.error, /BETA has no window/);
+    const log = (await c.call('GET', `/api/team?project=${projectId}`)).json.entries;
+    assert.ok(log.some(e => e.via === 'owner' && e.to === 'team' && e.text === 'hello everyone'));
+  });
+
   test("the owner's @Names count anywhere in a Team talk message, each named agent is tried", async () => {
     const projectId = (await agentNamed(c, 'ALPHA')).projectId;
     const r = await c.call('POST', '/api/team', { project: projectId, text: '@ALPHA can you see this? And you @beta?' });
