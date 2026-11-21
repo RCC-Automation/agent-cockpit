@@ -953,9 +953,14 @@ function readRaw(req, max) {
 // while it is used, so the model loads once. Closed after 30 idle minutes to give the memory back.
 // COCKPIT_TRANSCRIBE_CMD (a JSON list) replaces the command, for example another Python.
 let transcriber = null;
+// The Python that runs it: data/whisper-python.txt names one (best one with faster-whisper, for example OM Studio's
+// own .venv\Scripts\python.exe), else the PC's Python, which then needs openai-whisper.
 function transcriberCmd() {
   try { const c = JSON.parse(process.env.COCKPIT_TRANSCRIBE_CMD || ''); if (Array.isArray(c) && c.length) return c.map(String); } catch { /* default */ }
-  return process.platform === 'win32' ? ['py', '-3', '-u', path.join(ROOT, 'transcribe-worker.py')] : ['python3', '-u', path.join(ROOT, 'transcribe-worker.py')];
+  const worker = path.join(ROOT, 'transcribe-worker.py');
+  let py = ''; try { py = fs.readFileSync(path.join(DATA_DIR, 'whisper-python.txt'), 'utf8').trim(); } catch { /* none */ }
+  if (py && fs.existsSync(py)) return [py, '-u', worker];
+  return process.platform === 'win32' ? ['py', '-3', '-u', worker] : ['python3', '-u', worker];
 }
 // `warm`: only load the model (the mic was tapped; the recording follows).
 function transcribe(file, lang, warm = false) {
@@ -971,7 +976,7 @@ function transcribe(file, lang, warm = false) {
         let m; try { m = JSON.parse(line); } catch { continue; }
         const w = t.waiting.get(m.id); if (!w) continue;
         t.waiting.delete(m.id);
-        m.error ? w.reject(new Error('Speech to text failed: ' + m.error)) : w.resolve(String(m.text || ''));
+        m.error ? w.reject(new Error('Speech to text failed: ' + m.error)) : w.resolve({ text: String(m.text || ''), language: m.language || '', engine: m.engine || '' });
       }
     });
     child.stderr.on('data', d => { t.err = (t.err + d).slice(-2000); });
@@ -1454,7 +1459,11 @@ const routes = {
     fs.writeFileSync(file, audio);
     const lang = (/^[a-z]{2}/i.exec(url.searchParams.get('lang') || '') || [''])[0].toLowerCase();
     const t0 = Date.now();
-    try { const text = await transcribe(file, lang); console.log(`Speech to text: ${audio.length} bytes ${type} ${lang || 'auto'}, ${text.length} characters in ${Date.now() - t0} ms`); json(res, 200, { text }); }
+    try {
+      const r = await transcribe(file, lang);
+      console.log(`Speech to text (${r.engine || '?'}): ${audio.length} bytes ${type}, heard ${r.language || lang || '?'}, ${r.text.length} characters in ${Date.now() - t0} ms`);
+      json(res, 200, { text: r.text, language: r.language });
+    }
     catch (e) { console.log(`Speech to text failed: ${audio.length} bytes ${type}: ${e.message}`); json(res, 502, { error: e.message }); }
     finally { fs.rm(file, { force: true }, () => {}); }
   },

@@ -33,10 +33,12 @@ A small control station for your Claude Code agents. It runs on your own PC and 
 - **Broadcast.** In Team, send one message or command, such as `/clock-in`, to every ticked agent. An agent in a
   PowerShell window gets it typed into its window, if the cockpit opened that window and the agent is waiting for
   input. Busy agents are left out and named, so nothing is typed into a window that is asking a question.
-- **Microphone.** The Mic button in the chat box dictates into the message box: click, speak, click again to stop.
-  The words appear as you speak and nothing is sent until you send it. It uses the speech recognition built into the
-  browser, so it works in Chrome and Edge, needs an internet connection, and the audio goes to that browser's speech
-  service. The dictation language is set in the Aa menu.
+- **Microphone.** The Mic button in the chat box records: click, speak, click again to stop. This PC then writes
+  the words into the message box with Whisper, in the language you spoke; nothing is sent until you send it. The
+  first click also wakes Whisper, so the words come a second or two after you stop. It works on the computer and on
+  the iPhone, and the audio never leaves this PC. It needs Python with `faster-whisper` (fast, as OM Studio uses it)
+  or `openai-whisper`; `data/whisper-python.txt` can name that Python, for example OM Studio's
+  `.venv\Scripts\python.exe`.
 - **Look.** The Aa button sets the theme (light, dark, midnight, paper, high contrast, or follow the PC) and the
   text size. The choice is kept per browser.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.

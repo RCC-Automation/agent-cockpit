@@ -267,7 +267,6 @@ details.peer[open] summary .t{display:none}
 .art .chev{width:14px;height:14px;color:var(--ink-3)}
 a.artlink{display:inline-flex;align-items:center;gap:4px;text-decoration:underline;text-underline-offset:2px}
 a.artlink svg{width:14px;height:14px;flex:none}
-.mic-lang{min-width:3em;font-variant-numeric:tabular-nums}
 .mic.on{border-color:var(--fail);color:var(--fail);background:color-mix(in srgb,var(--fail) 10%,var(--surface))}
 .mic.on svg{animation:pulse 1.2s ease-in-out infinite}
 .mic.busy{color:var(--accent)}
@@ -374,7 +373,7 @@ a.artlink svg{width:14px;height:14px;flex:none}
   .composer .line .btn{border:0;background:transparent;width:44px;height:44px;padding:0;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:none}
   .composer .line .btn .plus{font-size:1.6rem;font-weight:400;line-height:1}
   .composer .mic svg{width:20px;height:20px}
-  .composer .lbl,.composer .line .mic-lang{display:none}
+  .composer .lbl{display:none}
   .composer .line .c-send{background:var(--accent);color:var(--accent-ink)}
   .composer .c-send svg{display:block}
   .composer .line .mic.on{background:color-mix(in srgb,var(--fail) 14%,transparent)}
@@ -1141,12 +1140,8 @@ function renderCtx() {
 }
 
 // ───────── dictation ─────────
-// Uses the speech recognition built into the browser (Chrome and Edge have it). Click to start, speak,
-// click again to stop. The words go into the message box as you speak; nothing is sent until you send it.
-const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
-// iPhone and iPad (an iPad says "Macintosh" but has a touch screen).
-const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
-const SPEECH_LANGS = { '': 'Follow the browser', 'en-US': 'English (US)', 'en-GB': 'English (UK)', 'es-ES': 'Español (España)', 'es-MX': 'Español (México)', 'de-DE': 'Deutsch', 'fr-FR': 'Français', 'it-IT': 'Italiano', 'pt-BR': 'Português (Brasil)' };
+// The microphone of the message box: click to record, click again to stop; this PC writes the words with
+// Whisper (POST /api/transcribe), in the language spoken. Nothing is sent until you send it.
 // The round send button of the phone layout (an arrow); on a computer the button says Send.
 const SEND_ICON = () => { const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('width', '20'); svg.setAttribute('height', '20'); svg.setAttribute('aria-hidden', 'true'); const p = document.createElementNS(ns, 'path'); p.setAttribute('d', 'M12 19V5M5 12l7-7 7 7'); p.setAttribute('fill', 'none'); p.setAttribute('stroke', 'currentColor'); p.setAttribute('stroke-width', '2.4'); p.setAttribute('stroke-linecap', 'round'); p.setAttribute('stroke-linejoin', 'round'); svg.append(p); return svg; };
 function micButton(ta) {
@@ -1154,16 +1149,9 @@ function micButton(ta) {
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
   icon.innerHTML = '<path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6.5-3.5a1 1 0 1 0-2 0 4.5 4.5 0 0 1-9 0 1 1 0 1 0-2 0 6.5 6.5 0 0 0 5.5 6.42V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.08a6.5 6.5 0 0 0 5.5-6.42Z"/>';
-  const b = h('button', { class: 'btn mic', type: 'button', title: 'Dictate: click, speak, click again to stop', 'aria-pressed': 'false' }, icon, label);
-  let rec = null;
-  const stop = () => {
-    // abort() drops what is still being recognized; the handlers go too, so a late result never refills the box.
-    if (rec) { const r = rec; rec = null; r.onend = null; r.onresult = null; r.onerror = null; try { r.abort(); } catch { /* already stopped */ } }
-    b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic';
-    if (S.micStop === stop) S.micStop = null;
-  };
-  // iPhone and iPad: the browser's own dictation is unreliable there and missing in a Home Screen app. The mic
-  // records instead; a second tap stops, and this PC turns the recording into text (Whisper). The first tap also
+  const b = h('button', { class: 'btn mic', type: 'button', title: 'Speak: click, talk, click again. This PC writes the words (Whisper), in the language you speak.', 'aria-pressed': 'false' }, icon, label);
+  // The mic records; a second tap stops, and this PC turns the recording into text with Whisper, as OM Studio does
+  // (the browser's own dictation kept one language and does not work in an iPhone Home Screen app). The first tap also
   // wakes Whisper on the PC, so it is ready when the person stops. Whisper hears the language by itself.
   // While recording, a bar in place of the text box shows a red dot, the time and how loud the voice is; after
   // the stop it says the text is being written.
@@ -1235,46 +1223,10 @@ function micButton(ta) {
     S.micStop = () => { if (recorder === mr) { recorder = null; mr.stop(); } };
   };
   const idle = () => { showBar(null); b.classList.remove('on', 'busy'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic'; if (S.micStop && !recorder) S.micStop = null; };
-  b.addEventListener('click', () => {
-    if (IOS || recorder || busy) return record();
-    if (rec) return stop();
-    if (!Speech) return toast('This browser has no built-in dictation. It works in Chrome and Edge.');
-    if (S.micStop) S.micStop();
-    const r = new Speech(); rec = r;
-    r.lang = store.get('cockpit.speech') || navigator.language || 'en-US'; r.continuous = true; r.interimResults = true;
-    const before = ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value;
-    let said = '';
-    r.onresult = e => {
-      if (rec !== r) return;
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) said += t; else interim += t; }
-      ta.value = before + said + interim; ta.dispatchEvent(new Event('input'));
-      ta.scrollTop = ta.scrollHeight;
-    };
-    r.onerror = e => {
-      const why = { 'not-allowed': 'The browser may not use the microphone. Allow it for this page: click the icon left of the address.', 'service-not-allowed': 'The browser may not use the microphone. Allow it for this page: click the icon left of the address.',
-        'audio-capture': 'No microphone was found.', network: 'Dictation needs an internet connection in this browser.', 'language-not-supported': 'This browser cannot dictate in the chosen language.' }[e.error];
-      if (why) toast(why);
-      if (e.error !== 'no-speech' && e.error !== 'aborted') stop();
-    };
-    // The browser stops listening after a pause. Keep going until the person clicks again.
-    r.onend = () => { if (rec === r) { try { r.start(); } catch { stop(); } } };
-    try { r.start(); } catch (x) { rec = null; return toast('Dictation could not start: ' + x.message); }
-    b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); label.textContent = 'Listening';
-    S.micStop = stop; ta.focus();
-  });
-  // One click switches the dictation language: English, Spanish, German. The full list is under settings.
-  const QUICK = [['en-US', 'EN'], ['es-ES', 'ES'], ['de-DE', 'DE']];
-  const langNow = () => store.get('cockpit.speech') || navigator.language || 'en-US';
-  const short = () => { const l = langNow(); const q = QUICK.find(([k]) => k === l); return q ? q[1] : l.slice(0, 2).toUpperCase(); };
-  const lang = h('button', { class: 'btn mic-lang', type: 'button', title: 'Dictation language. Click to switch: English, Spanish, German.', text: short() });
-  lang.addEventListener('click', () => {
-    const i = QUICK.findIndex(([k]) => k === langNow());
-    store.set('cockpit.speech', QUICK[(i + 1) % QUICK.length][0]);
-    lang.textContent = short();
-    if (rec) { stop(); b.click(); } // listening: start again in the new language
-  });
-  const el = h('span', { class: 'mic-wrap' }, b, lang);
+  b.addEventListener('click', record);
+  // The composer stops a recording when the message is sent: what was said so far is dropped.
+  const stop = () => { if (recorder) { const mr = recorder; recorder = null; mr.stop(); } };
+  const el = h('span', { class: 'mic-wrap' }, b);
   return { el, stop };
 }
 
@@ -1818,8 +1770,6 @@ function lookMenu() {
   const menu = h('div', { class: 'look', role: 'dialog', 'aria-label': 'Theme and text size' },
     h('label', null, 'Theme', h('select', { id: 'look-theme', onchange: e => { store.set('cockpit.theme', e.target.value); applyLook(); } },
       Object.entries(THEMES).map(([k, v]) => h('option', { value: k, text: v, selected: (store.get('cockpit.theme') || 'system') === k })))),
-    h('label', null, 'Dictation language', h('select', { id: 'look-speech', onchange: e => store.set('cockpit.speech', e.target.value) },
-      Object.entries(SPEECH_LANGS).map(([k, v]) => h('option', { value: k, text: v, selected: (store.get('cockpit.speech') || '') === k })))),
     h('label', null, 'Text size', h('div', { class: 'size' },
       h('button', { class: 'btn sm', type: 'button', text: 'A−', 'aria-label': 'Smaller text', onclick: () => step(-1) }), shown,
       h('button', { class: 'btn sm', type: 'button', text: 'A+', 'aria-label': 'Larger text', onclick: () => step(1) }),
