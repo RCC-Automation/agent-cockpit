@@ -5,8 +5,17 @@ import { parseMentions, answerOfLine, teamHint, ownerMentions } from '../team.mj
 
 const names = ['REBE', 'Pancho', 'FABY'];
 
-test('a paragraph starting with @Name goes to that teammate, any case', () => {
-  assert.deepEqual(parseMentions('Done.\n\n@rebe is the render done?\n\nThanks.', names), [{ to: 'REBE', text: 'is the render done?' }]);
+test('from a paragraph starting with @Name to the end of the answer goes to that teammate, any case', () => {
+  assert.deepEqual(parseMentions('Done.\n\n@rebe is the render done?\n\nThanks.', names), [{ to: 'REBE', text: 'is the render done?\n\nThanks.' }]);
+});
+
+test('a message of several paragraphs goes whole, as GEMI sent a song', () => {
+  const song = '@COCKPIT\nVerse 1\nline a\n\nChorus\nline b\n\nVerse 2\nline c';
+  assert.deepEqual(parseMentions(song, ['COCKPIT']), [{ to: 'COCKPIT', text: 'Verse 1\nline a\n\nChorus\nline b\n\nVerse 2\nline c' }]);
+});
+
+test('code inside a message to a teammate goes with it', () => {
+  assert.deepEqual(parseMentions('@REBE run this:\n\n```\nnpm test\n```', names), [{ to: 'REBE', text: 'run this:\n\n```\nnpm test\n```' }]);
 });
 
 test('@team and @all reach everyone', () => {

@@ -140,8 +140,9 @@ into a window, only a one-line notice, and the agent reads the message itself. T
 the hub is connected.
 
 **Team talk with @Name.** An agent reaches a teammate by starting a paragraph of its answer with `@Name`
-(for example `@REBE is the render done?`), or everyone with `@team`. The cockpit sends that paragraph through
-the hub as that agent. A teammate whose own bridge tools listen gets it directly; any other (Codex, Hermes)
+(for example `@REBE is the render done?`), or everyone with `@team`. The cockpit sends everything from that
+paragraph to the end of the answer (or to the next `@Name` paragraph) through the hub as that agent, so a message
+of several paragraphs, like a song or a list, arrives whole. A teammate whose own bridge tools listen gets it directly; any other (Codex, Hermes)
 gets a one-line notice naming a file in `data/team/inbox` that holds the message, and answers the same way,
 with `@Name`. You can do the same: `@REBE …` typed in any agent's chat goes to REBE instead, and the
 **Team talk** button shows the whole conversation of the project, with a box to write `@Name` or `@team`.

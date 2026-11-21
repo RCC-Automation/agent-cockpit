@@ -5,19 +5,23 @@
 // The paragraphs of an answer that start with "@Name". `names`: the teammates' names (any case).
 // Returns [{ to: <name as in names> | 'team', text }]. Text inside ``` code blocks is never a mention,
 // and a mention of a name that is not a teammate is left alone (it is just text then).
+// A message runs from its @Name to the next paragraph that starts with a teammate's @Name, or to the end of the
+// answer, so a message of several paragraphs (a song, a list, code) goes whole. An @Name inside ``` code never
+// starts one.
 export function parseMentions(answer, names) {
   const byLower = new Map(names.map(n => [String(n).toLowerCase(), n]));
   const out = [];
-  const withoutCode = String(answer || '').replace(/```[\s\S]*?(```|$)/g, '\n\n');
-  for (const para of withoutCode.split(/\n\s*\n/)) {
-    const m = /^\s*@([A-Za-z0-9_-]{1,40})[\s:,]+([\s\S]+)$/.exec(para);
-    if (!m) continue;
-    const key = m[1].toLowerCase();
-    const to = key === 'team' || key === 'all' ? 'team' : byLower.get(key);
-    const text = m[2].trim().slice(0, 4000);
-    if (to && text) out.push({ to, text });
+  let cur = null, inCode = false, prevBlank = true;
+  for (const line of String(answer || '').split('\n')) {
+    const m = !inCode && prevBlank ? /^\s*@([A-Za-z0-9_-]{1,40})(?:[\s:,]+([\s\S]*))?$/.exec(line) : null;
+    const key = m && m[1].toLowerCase();
+    const to = m && (key === 'team' || key === 'all' ? 'team' : byLower.get(key));
+    if (to) { cur = { to, lines: [m[2] || ''] }; out.push(cur); }
+    else if (cur) cur.lines.push(line);
+    if (/^\s*```/.test(line)) inCode = !inCode;
+    prevBlank = !line.trim();
   }
-  return out;
+  return out.map(c => ({ to: c.to, text: c.lines.join('\n').trim().slice(0, 4000) })).filter(c => c.text);
 }
 
 // What a new Claude Code session line holds for the mention reader: the text of an answer, or null.
@@ -33,7 +37,9 @@ export function answerOfLine(line) {
 export function teamHint(names) {
   const list = names.length ? names.join(', ') : 'none yet';
   return `Your teammates in this project: ${list}. To reach one, start a paragraph of your answer with @Name `
-    + '(for example "@REBE is the render done?"); @team reaches all of them. Their answers come back to you the same way. '
+    + '(for example "@REBE is the render done?"); @team reaches all of them. Everything from the @Name to the end of '
+    + 'your answer (or to the next @Name paragraph) goes to them, so write what is for your user before it. '
+    + 'Their answers come back to you the same way. '
     + 'Do not answer a teammate just to confirm, thank or acknowledge: that starts an endless back and forth.';
 }
 
