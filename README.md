@@ -10,11 +10,12 @@ A small control station for your Claude Code agents. It runs on your own PC and 
   cockpit chat as well. A message you send in the cockpit is typed into the agent's window. This works for windows
   the cockpit opened (New agent, Open terminal, Wake all). While the agent is busy, Claude Code queues the message.
 - **Live view of your terminals.** Named Claude Code sessions that run in a terminal in the project folder appear in
-  the roster by themselves, with chat and status live. A window you opened yourself can be watched but not written
+  the agent list by themselves, with chat and status live. A window you opened yourself can be watched but not written
   to; close it and use Open terminal to get both.
 - **One rule.** Every agent lives in its own terminal window. The cockpit opens the window, shows the chat, and
   writes by typing into the window. No agent runs inside the cockpit.
-- **Sessions.** Every earlier session of the folder can be added to the roster. Open terminal continues it in its own window.
+- **Old chats.** New agent > **Bring back an old chat** lists the earlier chats of the folder that are not in the agent
+  list; Bring back puts one in the list, and Open terminal continues it in its own window. A new project opens New agent.
 - **Terminal windows.** New agents start in a PowerShell window by default. Reopen any agent in one with Open terminal.
   The window runs the normal Claude Code, and the cockpit shows the same agent live.
 - **Chat.** Live streaming answers and images (attach, paste or drop). Commands, file reads and other tool calls are
@@ -43,7 +44,7 @@ A small control station for your Claude Code agents. It runs on your own PC and 
   the iPhone, and the audio never leaves this PC. It needs Python with `faster-whisper` (fast, as OM Studio uses it)
   or `openai-whisper`; `data/whisper-python.txt` can name that Python, for example OM Studio's
   `.venv\Scripts\python.exe`.
-- **Menu.** The ⋯ button next to the project holds Settings, Team list, Wake all, Sessions, New project, Notify me,
+- **Menu.** The ⋯ button next to the project holds Settings, Team list, Wake all, New project, Notify me,
   Look and text size, and Shut down.
 - **Colors.** Every agent keeps one color, in the list and in Team talk, so who talks to whom shows at a glance.
 - **Look.** Look and text size (in the ⋯ menu) sets the theme (light, dark, midnight, paper, high contrast, or follow the PC) and the
@@ -98,7 +99,7 @@ uses the Claude login already stored on this PC, which is your subscription.
 - Each agent is one Claude Code session started in its project folder. It loads your normal settings,
   `CLAUDE.md`, skills and plugins (including ECC), exactly as `claude` does in that folder.
 - Every agent is told its own name, the project it belongs to, and who its teammates are.
-- The roster is saved in `data/roster.json` and the cockpit's own log in `data/cockpit.log`. Chat history is read from Claude Code's own session files,
+- The agent list (roster) is saved in `data/roster.json` and the cockpit's own log in `data/cockpit.log`. Chat history is read from Claude Code's own session files,
   so nothing is lost when the cockpit restarts.
 - An agent's process is closed after 20 idle minutes to save memory. It resumes on your next message.
 - A watched agent is read from the session file Claude Code keeps on disk. Its status is derived from that file:

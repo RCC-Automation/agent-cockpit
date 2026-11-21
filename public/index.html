@@ -347,6 +347,12 @@ a:hover + .lmore.hov,.lmore.hov:hover,.lmore.hov:focus-visible{opacity:1}
 .form .check{flex-direction:row;align-items:center;gap:8px;font-size:.85rem;font-weight:500;color:var(--ink)}
 .form .fixed{font-family:var(--mono);font-size:.8rem;font-weight:500;color:var(--ink);padding:7px 0}
 .err{color:var(--fail);font-weight:600}
+.oldchat{display:flex;align-items:center;gap:12px;max-width:860px;width:100%;text-align:left;cursor:pointer;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);color:var(--ink)}
+.oldchat:hover{border-color:var(--accent)}
+.oc-i{width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);font-weight:800;flex:none}
+.oc-t{flex:1;min-width:0;display:flex;flex-direction:column}
+.oc-t small{color:var(--ink-3);font-size:.78rem}
+.oc-c{color:var(--ink-3);font-size:1.2rem}
 .fpl{display:flex;flex-direction:column;gap:5px}
 .fpl-t{font-size:.75rem;font-weight:600;color:var(--ink-2)}
 .fpf{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:1px dashed var(--ink-3);border-radius:10px;background:var(--surface-2);padding:12px 14px;cursor:pointer;color:var(--ink-2);font-weight:500}
@@ -526,7 +532,6 @@ a:hover + .lmore.hov,.lmore.hov:hover,.lmore.hov:focus-visible{opacity:1}
     <button class="mi" id="btn-settings" type="button" role="menuitem" title="Name, team notes and permissions of this project"><span class="mi-i" aria-hidden="true">⚙</span>Settings</button>
     <button class="mi" id="btn-team" type="button" role="menuitem" title="All agents of this project: wake or remove the ones you pick"><span class="mi-i" aria-hidden="true">☰</span>Team list</button>
     <button class="mi" id="btn-wake" type="button" role="menuitem" title="Open a terminal window for every agent of this project that is not running"><span class="mi-i" aria-hidden="true">☀</span>Wake all</button>
-    <button class="mi" id="btn-resume" type="button" role="menuitem"><span class="mi-i" aria-hidden="true">↺</span>Sessions</button>
     <div class="more-h">Cockpit</div>
     <button class="mi" id="btn-project" type="button" role="menuitem"><span class="mi-i" aria-hidden="true">+</span>New project</button>
     <button class="mi" id="btn-notify" type="button" role="menuitem" hidden><span class="mi-i" aria-hidden="true">🔔</span>Notify me</button>
@@ -671,7 +676,7 @@ function renderBar() {
   // The Agent Hub, when one is set up: agents of a project reach each other through it.
   const hs = S.hub && S.hub.state;
   if (hs && hs !== 'off') counts.append(h('span', { class: 'pill ' + (hs === 'connected' ? 's-done' : hs === 'connecting' ? 's-idle' : 's-failed'), title: hs === 'connected' ? 'Connected to the Agent Hub: agents of a project reach each other' : 'The Agent Hub does not answer: ' + (S.hub.error || ''), text: hs === 'connected' ? 'Hub: connected' : hs === 'connecting' ? 'Hub: connecting' : 'Hub: not reachable' }));
-  $('btn-new').disabled = $('btn-resume').disabled = $('btn-wake').disabled = $('btn-team').disabled = $('btn-settings').disabled = !S.project;
+  $('btn-new').disabled = $('btn-wake').disabled = $('btn-team').disabled = $('btn-settings').disabled = !S.project;
   const needAll = [...S.agents.values()].filter(a => a.status === 'need').length;
   document.title = (needAll ? `(${needAll}) ` : '') + 'Cockpit' + (curProject() ? ' · ' + curProject().name : '');
   $('btn-notify').hidden = !('Notification' in window) || Notification.permission !== 'default';
@@ -1588,10 +1593,10 @@ function viewEmpty() {
   const p = curProject();
   return h('div', { class: 'pane' }, h('h2', { text: p ? p.name : 'Cockpit' }),
     h('span', { class: 'sub mono', text: p ? p.cwd : '' }),
-    h('span', { class: 'sub', text: 'No agent is selected. Named sessions that run in a terminal in this folder appear in the roster by themselves. You can also start a new agent here, or pick any earlier session.' }),
+    h('span', { class: 'sub', text: 'No agent is selected. Named chats that run in a terminal in this folder appear in your agent list by themselves. Start a new agent here, or bring back an old chat.' }),
     h('div', { class: 'acts' },
       h('button', { class: 'btn primary', type: 'button', text: '+ New agent', onclick: () => go('new') }),
-      h('button', { class: 'btn', type: 'button', text: 'Sessions', onclick: () => go('resume') }),
+      h('button', { class: 'btn', type: 'button', text: 'Bring back an old chat', onclick: () => go('resume') }),
       p ? h('button', { class: 'btn danger', type: 'button', text: 'Remove project', onclick: () => { if (confirm(`Remove the project "${p.name}" and its agents from the cockpit?\nThe folder and all session files stay untouched.`)) api('DELETE', `/api/projects/${p.id}`).catch(x => toast(x.message)); } }) : null));
 }
 function viewNew() {
@@ -1642,26 +1647,29 @@ function viewNew() {
     h('label', { class: 'wide' }, 'First message', first), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Launch' }), h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') })));
   setTimeout(() => name.focus(), 0);
-  return h('div', { class: 'pane' }, h('h2', { text: 'New agent' }), h('span', { class: 'sub', text: 'The agent starts in the project folder with the normal settings, skills and plugins of its tool. In a terminal window it is independent of the cockpit.' }), form);
+  const old = h('button', { class: 'oldchat', type: 'button', onclick: () => go('resume') },
+    h('span', { class: 'oc-i', 'aria-hidden': 'true', text: '↺' }),
+    h('span', { class: 'oc-t' }, h('b', { text: 'Bring back an old chat' }), h('small', { text: 'Continue a chat from this folder that is not in your agent list' })),
+    h('span', { class: 'oc-c', 'aria-hidden': 'true', text: '›' }));
+  return h('div', { class: 'pane' }, h('h2', { text: 'New agent' }), h('span', { class: 'sub', text: 'The agent starts in the project folder with the normal settings, skills and plugins of its tool. In a terminal window it is independent of the cockpit.' }), old, form);
 }
 function viewResume() {
-  const p = curProject(); const list = h('div', { class: 'list' }, h('span', { class: 'sub', text: 'Loading sessions…' }));
-  const find = h('input', { class: 'find', type: 'text', id: 'resume-find', placeholder: 'Filter by title or first message', 'aria-label': 'Filter sessions', style: 'flex:1 1 260px;max-width:620px' });
+  const p = curProject(); const list = h('div', { class: 'list' }, h('span', { class: 'sub', text: 'Loading old chats…' }));
+  const find = h('input', { class: 'find', type: 'text', id: 'resume-find', placeholder: 'Search old chats', 'aria-label': 'Search old chats', style: 'flex:1 1 260px;max-width:620px' });
   let sessions = [];
   const tool = S.resumeTool || 'claude';
   const tabs = h('div', { class: 'acts tool-tabs', role: 'tablist' }, Object.entries(TOOLS).map(([k, v]) => h('button', { class: 'btn sm' + (k === tool ? ' primary' : ''), type: 'button', role: 'tab', 'aria-selected': String(k === tool), text: v, onclick: () => { S.resumeTool = k; renderMain(); } })));
   const paint = () => {
     list.textContent = ''; const q = find.value.toLowerCase();
-    const hit = sessions.filter(s => !q || (s.title + ' ' + s.firstPrompt).toLowerCase().includes(q));
-    if (!hit.length) return list.append(h('span', { class: 'sub', text: sessions.length ? 'No session matches.' : `No previous ${TOOLS[tool]} sessions were found for this folder.` }));
+    const hit = sessions.filter(s => !s.agent && (!q || (s.title + ' ' + s.firstPrompt).toLowerCase().includes(q)));
+    if (!hit.length) return list.append(h('span', { class: 'sub', text: sessions.some(s => !s.agent) ? 'No chat matches.' : `No old ${TOOLS[tool]} chats in this folder that are not in your agent list already.` }));
     for (const s of hit) {
       list.append(h('div', { class: 'it' },
         h('div', { class: 'what' }, h('b', { text: s.title }), h('span', { text: [s.profile != null ? 'profile ' + (s.profile || 'default') : null, s.firstPrompt && s.firstPrompt !== s.title ? s.firstPrompt : null, s.gitBranch ? 'branch ' + s.gitBranch : null, s.cwd !== p.cwd ? s.cwdShort : null].filter(Boolean).join(' · ') || s.sessionId })),
         Date.now() - s.lastModified < 180000 ? h('span', { class: 'pill s-work', title: 'Changed in the last three minutes, so it is probably open in a terminal' }, h('span', { class: 'dot' }), 'active now') : null,
         h('span', { class: 'when', text: ago(s.lastModified) + (ago(s.lastModified) === 'now' ? '' : ' ago') }),
-        s.agent ? h('span', { class: 'pill s-idle', text: 'in cockpit as ' + s.agent })
-          : h('span', { class: 'acts' }, h('button', { class: 'btn sm primary', type: 'button', text: 'Add to roster',
-              title: 'Show this session live in the roster. Open terminal then gives it its own window.', onclick: async ev => {
+        h('span', { class: 'acts' }, h('button', { class: 'btn sm primary', type: 'button', text: 'Bring back',
+              title: 'Puts this chat into your agent list. Open terminal then continues it in its own window.', onclick: async ev => {
               ev.target.disabled = true;
               try { const d = await api('POST', '/api/agents', { projectId: p.id, sessionId: s.sessionId, cwd: s.cwd, harness: tool, profile: s.profile || '', title: s.named ? s.title : '', name: s.named ? s.title : s.title.replace(/\s+/g, ' ').slice(0, 28) }); S.agents.set(d.agent.id, d.agent); openAgent(d.agent.id); renderBar(); }
               catch (x) { toast(x.message); ev.target.disabled = false; }
@@ -1670,15 +1678,15 @@ function viewResume() {
   };
   find.addEventListener('input', paint);
   api('GET', `/api/sessions?projectId=${p.id}&limit=200${tool === 'claude' ? '' : '&harness=' + tool}`).then(d => { sessions = d.sessions; paint(); }).catch(x => { list.textContent = ''; list.append(h('span', { class: 'err', text: x.message })); });
-  return h('div', { class: 'pane' }, h('h2', { text: 'Sessions in this folder' }),
+  return h('div', { class: 'pane' }, h('h2', { text: 'Bring back an old chat' }),
+    h('span', { class: 'sub', text: 'Old chats from this folder that are not in your agent list. Bring back puts one in the list.' }),
     tabs,
-    h('span', { class: 'sub', text: `${TOOLS[tool]} sessions recorded in ${p.cwd}. Add to roster shows a session live. Then click Open terminal to continue it in its own window; close any window that still runs it first, because a session should be driven from one place at a time.` }),
     h('div', { class: 'acts' }, find,
-      tool !== 'claude' ? null : h('button', { class: 'btn', type: 'button', text: 'Add all named sessions', title: 'Shows every named session of the last days in the roster. Nothing is started.', onclick: async () => {
+      tool !== 'claude' ? null : h('button', { class: 'btn', type: 'button', text: 'Bring back all named chats', title: 'Puts every named chat of the last days into your agent list. Nothing is started.', onclick: async () => {
         try { const d = await api('POST', `/api/projects/${p.id}/import`); await refresh(); toast(d.imported ? `${d.imported} agent${d.imported === 1 ? '' : 's'} added.` : 'No new named sessions in this folder.'); if (d.imported) selectProject(p.id, 'chat'); }
         catch (x) { toast(x.message); }
       } })),
-    list, h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', text: 'Back', onclick: () => go('chat') })));
+    list, h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', text: 'Back', onclick: () => go('new') })));
 }
 function viewProject() {
   const err = h('span', { class: 'err wide' });
@@ -1697,13 +1705,13 @@ function viewProject() {
     try {
       const d = await api('POST', '/api/projects', { ...body, importNamed: auto.checked });
       await refresh();
-      selectProject(d.project.id, teamOf(d.project.id).length ? 'chat' : 'resume');
+      selectProject(d.project.id, teamOf(d.project.id).length ? 'chat' : 'new');
       if (d.imported) toast(`${d.imported} agent${d.imported === 1 ? '' : 's'} added from this folder.`);
     } catch (x) { err.textContent = x.message; }
   };
   const form = h('form', { class: 'form', onsubmit: e => { e.preventDefault(); if (!chosen) { err.textContent = 'Choose the project folder first.'; return cwd.click(); } create({ name: name.value, cwd: chosen, note: note.value }); } },
     h('div', { class: 'wide fpl' }, h('span', { class: 'fpl-t', text: 'Project folder' }), cwd), h('label', null, 'Project name', name), h('label', { class: 'wide' }, 'Team notes', note),
-    h('label', { class: 'wide check' }, auto, 'Show the named sessions of this folder in the roster automatically, also new ones'), err,
+    h('label', { class: 'wide check' }, auto, 'Put the named chats of this folder in the agent list by themselves, also new ones'), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Create project' }), S.projects.length ? h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') }) : null));
   const sug = h('div', { class: 'list' });
   api('GET', '/api/folders').then(d => {
@@ -1902,7 +1910,7 @@ function viewTeam() {
   paint(); paintChips();
   const quick = (text, fn) => h('button', { class: 'btn sm', type: 'button', text, onclick: () => choose(fn) });
   return h('div', { class: 'pane' }, h('h2', { text: 'Team of ' + p.name }),
-    h('span', { class: 'sub', text: 'Tick the agents you mean. Send gives all of them the same message or command. Wake opens one terminal window per ticked agent that is not running. Remove takes agents off the roster without touching their sessions or windows.' }),
+    h('span', { class: 'sub', text: 'Tick the agents you mean. Send gives all of them the same message or command. Wake opens one terminal window per ticked agent that is not running. Remove takes agents off the agent list without touching their chats or windows.' }),
     h('div', { class: 'acts' }, h('span', { class: 'hint', text: 'Tick:' }), quick('All', () => true), quick('None', () => false), quick('Not running', a => a.asleep),
       quick('Idle for 3 days or more', a => a.status === 'idle' && Date.now() - (a.updatedAt || 0) > 3 * 86400000)),
     sayForm, chips,
@@ -1931,7 +1939,7 @@ function viewSettings() {
     h('label', { class: 'wide' }, 'Permissions for all agents of this project', mode,
       h('span', { class: 'hint', text: 'Saving applies it to every agent of the project and to new ones. An agent in a terminal window gets it the next time the cockpit opens its window. A window you opened yourself keeps the mode you gave it there.' })),
     h('label', { class: 'wide' }, 'Team notes', note),
-    h('label', { class: 'wide check' }, auto, 'Show the named sessions of this folder in the roster automatically, also new ones'), err,
+    h('label', { class: 'wide check' }, auto, 'Put the named chats of this folder in the agent list by themselves, also new ones'), err,
     h('div', { class: 'acts wide' }, h('button', { class: 'btn primary', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => go('chat') }),
       h('button', { class: 'btn danger', type: 'button', text: 'Remove project', onclick: () => { if (confirm(`Remove the project "${p.name}" and its agents from the cockpit?\nThe folder, all session files and all terminal windows stay untouched.`)) api('DELETE', `/api/projects/${p.id}`).catch(x => toast(x.message)); } })));
   return h('div', { class: 'pane' }, h('h2', { text: 'Project settings' }), form);
@@ -1962,7 +1970,7 @@ function closeDrawer() {
 function paintMbar() {
   const t = $('mtitle'); if (!t) return;
   const a = S.view === 'chat' ? curAgent() : null;
-  const names = { new: 'New agent', settings: 'Settings', team: 'Team', talk: 'Team talk', resume: 'Sessions', project: 'Projects' };
+  const names = { new: 'New agent', settings: 'Settings', team: 'Team', talk: 'Team talk', resume: 'Old chats', project: 'Projects' };
   t.replaceChildren(...(a ? [h('span', { class: 'mdot s-' + a.status, title: ST[a.status] }, h('span', { class: 'dot' })), h('span', { class: 't', text: a.name })]
     : [h('span', { class: 't', text: names[S.view] || (curProject() ? curProject().name : 'Cockpit') })]));
   // ⋯ shows the agent's controls; while they are open it is an × that hides them again.
@@ -2099,7 +2107,6 @@ $('btn-wake').addEventListener('click', async () => {
   } catch (x) { toast(x.message); }
 });
 $('btn-new').addEventListener('click', () => go('new'));
-$('btn-resume').addEventListener('click', () => go('resume'));
 $('btn-notify').addEventListener('click', () => Notification.requestPermission().then(renderBar));
 function stopped() {
   document.title = 'Cockpit (stopped)';
