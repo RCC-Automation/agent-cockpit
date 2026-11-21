@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
 import { hubConfig, createHubClient, deliveryText, outcomeFor, senderWord, messageIdOf } from './hub-client.mjs';
-import { parseMentions, answerOfLine, teamHint, ownerMentions } from './team.mjs';
+import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart } from './team.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
 const harnessOf = a => (a && HARNESSES[a.harness]) ? a.harness : 'claude';
@@ -941,6 +941,13 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
+// Pictures sent from the page ({ mediaType, data: base64 }), at most 10.
+function imagesOf(b) { return (Array.isArray(b.images) ? b.images : []).filter(i => i && /^image\/(png|jpeg|gif|webp)$/.test(i.mediaType) && typeof i.data === 'string').slice(0, 10); }
+// A terminal cannot take a pasted image, so each is saved and the agent is told where it is.
+function saveImages(folder, images) {
+  const dir = path.join(os.tmpdir(), 'agent-cockpit', folder); fs.mkdirSync(dir, { recursive: true });
+  return images.map((im, n) => { const f = path.join(dir, `${Date.now()}-${n}.${im.mediaType.split('/')[1].replace('jpeg', 'jpg')}`); fs.writeFileSync(f, Buffer.from(im.data, 'base64')); return f; });
+}
 function readRaw(req, max) {
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
@@ -1483,7 +1490,8 @@ const routes = {
   'POST /api/team': async (req, res) => {
     const b = await readBody(req);
     if (!projects.has(b.project)) return json(res, 404, { error: 'No such project.' });
-    const r = await ownerSay(b.project, String(b.text || '').trim());
+    const images = imagesOf(b);
+    const r = await ownerSay(b.project, String(b.text || '').trim(), null, images.length ? saveImages('team', images) : []);
     if (!r) return json(res, 400, { error: 'Name an agent of this project with @Name, or everyone with @team.' });
     r.sent.length ? json(res, 200, { ok: true, sent: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
   },
@@ -1616,14 +1624,15 @@ const agentRoutes = {
   'POST message': async (a, req, res) => {
     const b = await readBody(req);
     const text = String(b.text || '').trim();
-    const images = (Array.isArray(b.images) ? b.images : []).filter(i => i && /^image\/(png|jpeg|gif|webp)$/.test(i.mediaType) && typeof i.data === 'string').slice(0, 10);
+    const images = imagesOf(b);
     if (!text && !images.length) return json(res, 400, { error: 'Empty message' });
+    const pics = images.length ? saveImages(a.id, images) : [];
     // "@REBE …" typed in any agent's chat goes to REBE (a teammate in the same project); "@team …" to all of them.
-    // An @Name in the middle ("ask @REBE too") reaches REBE and this agent as well.
+    // An @Name in the middle ("ask @REBE too") reaches REBE and this agent as well. Attached pictures go along.
     // These are the owner's own words, so they are typed into those windows as they are.
     let also = null;
-    if (!images.length) {
-      const r = await ownerSay(a.projectId, text, a);
+    if (text) {
+      const r = await ownerSay(a.projectId, text, a, pics);
       if (r && !r.self) return r.sent.length ? json(res, 200, { ok: true, redirected: r.sent, skipped: r.skipped }) : json(res, 409, { error: `Not sent. ${r.skipped.join('. ')}.` });
       also = r;
     }
@@ -1631,12 +1640,7 @@ const agentRoutes = {
     const block = typeBlock(a, b.force === true);
     if (block) return json(res, 409, { error: `${a.name}: ${block.why}.${alsoNote}`, canForce: !block.hard });
     let line = text;
-    if (images.length) {
-      // A terminal cannot take a pasted image from here, so the image is saved and the agent is told where it is.
-      const dir = path.join(os.tmpdir(), 'agent-cockpit', a.id); fs.mkdirSync(dir, { recursive: true });
-      const paths = images.map((im, n) => { const f = path.join(dir, `${Date.now()}-${n}.${im.mediaType.split('/')[1].replace('jpeg', 'jpg')}`); fs.writeFileSync(f, Buffer.from(im.data, 'base64')); return f; });
-      line = (line ? line + ' ' : '') + paths.map(f => `[Look at this image: ${f}]`).join(' ');
-    }
+    if (pics.length) line = (line ? line + ' ' : '') + pics.map(f => `[Look at this image: ${f}]`).join(' ');
     const out = (await typeToAgents([a], line, true, b.force !== true)).get(a.id);
     if (out === QUESTION) {
       // Show the question in the cockpit, so it can be answered here and the message sent after it.
@@ -1644,6 +1648,7 @@ const agentRoutes = {
       return json(res, 409, { error: `${a.name}: ${QUESTION_WHY}.`, canForce: true, question });
     }
     if (out !== 'sent') return json(res, 502, { error: `${a.name}: ${out}.` });
+    rt(a.id).ownerAsked = null; // the owner talks to it in its own chat now: its answers stay there
     nudgeWatch(a);
     json(res, 200, { ok: true, typed: true, ...(also ? { alsoTo: also.sent, skipped: also.skipped } : {}) });
   },
@@ -2021,7 +2026,11 @@ const teamOf = a => [...agents.values()].filter(x => x.projectId === a.projectId
 // names no agent of the project, so the caller treats it as an ordinary message.
 // Every @Name counts, wherever it is in the text. `self` in the answer: the chat's own agent should get the
 // message too (it was not addressed away from it by a leading @OtherName).
-async function ownerSay(projectId, text, from = null) {
+// `images`: pictures the owner attached; each agent is told where the saved file is.
+// An agent that got the owner's words answers in its own chat; that answer is shown in Team talk too (replyWatch).
+// A Codex, Hermes or other non-Claude agent never got the team rule when its window opened (only Claude Code takes
+// a system prompt from the cockpit), so its first team message in a session carries the rule.
+async function ownerSay(projectId, text, from = null, images = []) {
   const mates = [...agents.values()].filter(x => x.projectId === projectId && x !== from);
   const m = ownerMentions(text, mates.map(x => x.name));
   const targets = m.all ? mates : mates.filter(x => m.names.includes(x.name));
@@ -2029,14 +2038,29 @@ async function ownerSay(projectId, text, from = null) {
   const self = !!from && !(m.leading && m.leading !== from.name);
   const all = m.all;
   const words = m.words, sent = [], skipped = [];
+  const pics = images.length ? ' ' + images.map(f => `[Look at this image: ${f}]`).join(' ') : '';
   for (const t of targets) {
     if (!canTalk(t)) { skipped.push(`${t.name} has no window the cockpit can type into`); continue; }
     const tb = typeBlock(t, false); if (tb) { skipped.push(`${t.name}: ${tb.why}`); continue; }
-    const out = (await typeToAgents([t], words, true, true)).get(t.id);
-    if (out === 'sent') { sent.push(t.name); nudgeWatch(t); } else skipped.push(`${t.name}: ${out === QUESTION ? 'a question is open in its window' : out}`);
+    const r = rt(t.id), session = t.sessionId || t.id;
+    const hint = (t.harness || 'claude') !== 'claude' && r.teamHinted !== session
+      ? ` [${teamHint(teamOf(t).map(x => x.name))}]` : '';
+    const out = (await typeToAgents([t], words + pics + hint, true, true)).get(t.id);
+    if (out === 'sent') { sent.push(t.name); nudgeWatch(t); r.ownerAsked = Date.now(); if (hint) r.teamHinted = session; }
+    else skipped.push(`${t.name}: ${out === QUESTION ? 'a question is open in its window' : out}`);
   }
-  teamLog(projectId, { from: 'You', to: all ? 'team' : targets.map(t => t.name).join(', '), text: words, via: 'owner', ok: sent.length > 0, error: skipped.join('; ') });
+  teamLog(projectId, { from: 'You', to: all ? 'team' : targets.map(t => t.name).join(', '), text: words + (images.length ? ` (${images.length} image${images.length > 1 ? 's' : ''})` : ''), via: 'owner', ok: sent.length > 0, error: skipped.join('; ') });
   return { sent, skipped, self };
+}
+// After the owner wrote to an agent through @Name, what it says to the owner shows in Team talk as its answer, until
+// the owner writes to it directly in its chat, or for 30 minutes.
+function replyWatch(a, newAnswers) {
+  const r = rt(a.id);
+  if (!r.ownerAsked) return;
+  if (Date.now() - r.ownerAsked > 30 * 60_000) { r.ownerAsked = null; return; }
+  const names = teamOf(a).map(x => x.name);
+  const text = newAnswers.map(x => ownPart(x.text, names)).filter(Boolean).join('\n\n');
+  if (text) teamLog(a.projectId, { from: a.name, to: 'You', text, via: 'reply', ok: true });
 }
 const inTeam = a => !!(hub && a.hubAgentId && a.hubTeam === 'team');
 // Two agents can answer each other forever ("confirmed." "standing by." ...). The agent messages sent since
@@ -2054,6 +2078,7 @@ function agentRun(projectId) {
 // Reads what is new in a team agent's answers and sends each @mention. Only answers written after the cockpit
 // first looked are read: history is never sent again (the first look only marks where the answers end).
 async function scanMentions(a, newAnswers) {
+  replyWatch(a, newAnswers);
   if (!inTeam(a) || hub.state().state !== 'connected') return;
   const names = teamOf(a).map(x => x.name);
   for (const ans of newAnswers) for (const m of parseMentions(ans.text, names)) {

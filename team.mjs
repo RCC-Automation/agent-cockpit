@@ -24,6 +24,21 @@ export function parseMentions(answer, names) {
   return out.map(c => ({ to: c.to, text: c.lines.join('\n').trim().slice(0, 4000) })).filter(c => c.text);
 }
 
+// What an answer says to the user: everything before its first @Name message (all of it when there is none).
+export function ownPart(answer, names) {
+  const byLower = new Set([...names.map(n => String(n).toLowerCase()), 'team', 'all']);
+  const lines = String(answer || '').split('\n'), keep = [];
+  let inCode = false, prevBlank = true;
+  for (const line of lines) {
+    const m = !inCode && prevBlank ? /^\s*@([A-Za-z0-9_-]{1,40})(?:[\s:,]|$)/.exec(line) : null;
+    if (m && byLower.has(m[1].toLowerCase())) break;
+    keep.push(line);
+    if (/^\s*```/.test(line)) inCode = !inCode;
+    prevBlank = !line.trim();
+  }
+  return keep.join('\n').trim().slice(0, 4000);
+}
+
 // What a new Claude Code session line holds for the mention reader: the text of an answer, or null.
 // Only the agent's own answers count: not subagents (sidechain), not tool calls, not what was sent to it.
 export function answerOfLine(line) {

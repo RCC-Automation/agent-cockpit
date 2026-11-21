@@ -146,7 +146,10 @@ of several paragraphs, like a song or a list, arrives whole. A teammate whose ow
 gets a one-line notice naming a file in `data/team/inbox` that holds the message, and answers the same way,
 with `@Name`. You can do the same: `@REBE …` typed in any agent's chat goes to REBE instead, and the
 **Team talk** button shows the whole conversation of the project, with a box to write `@Name` or `@team`.
-Claude Code agents are told this rule when the cockpit opens their window.
+Claude Code agents are told this rule when the cockpit opens their window; Codex, Hermes and other agents get it
+with the first team message the cockpit types into their window. When you write to an agent with `@Name`, what it
+answers you shows in Team talk as well, until you write to it in its own chat. The Team talk box is the same as a
+chat's: images, the microphone and the `@` list.
 
 ## iPhone (Tailscale)
 

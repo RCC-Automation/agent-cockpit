@@ -1,7 +1,7 @@
 // The @mention rules (team.mjs). Run with:  node --test test/team.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMentions, answerOfLine, teamHint, ownerMentions } from '../team.mjs';
+import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart } from '../team.mjs';
 
 const names = ['REBE', 'Pancho', 'FABY'];
 
@@ -69,4 +69,12 @@ test('@team anywhere, and what is not a mention for the owner', () => {
   const m = ownerMentions('mail me at raul@REBE.com or run `@REBE x`, @NOBODY', ['REBE']);
   assert.deepEqual(m.names, []);
   assert.equal(m.all, false);
+});
+
+// What an agent says to its user (shown in Team talk as its answer to the owner): the part before any @Name message.
+test('the part of an answer for the user is what comes before the first @Name message', () => {
+  assert.equal(ownPart('Here it is.\n\n@REBE is the render done?', names), 'Here it is.');
+  assert.equal(ownPart('No teammate here, just me.', names), 'No teammate here, just me.');
+  assert.equal(ownPart('@REBE only for you', names), '');
+  assert.equal(ownPart('I asked @REBE already.', names), 'I asked @REBE already.');
 });

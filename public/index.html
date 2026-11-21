@@ -305,7 +305,10 @@ a.artlink svg{width:14px;height:14px;flex:none}
 .form .fixed{font-family:var(--mono);font-size:.8rem;font-weight:500;color:var(--ink);padding:7px 0}
 .err{color:var(--fail);font-weight:600}
 .list{display:flex;flex-direction:column;gap:6px;max-width:860px}
-.talk{display:flex;flex-direction:column;gap:8px;max-width:860px;max-height:60vh;overflow:auto;padding:4px 2px}
+/* Team talk is laid out like a chat: the talk scrolls, the message box stays at the bottom. */
+.talk-view{display:flex;flex-direction:column;flex:1;min-height:0}
+.talk-view .talk-pane{flex:1;min-height:0;overflow-y:auto}
+.talk{display:flex;flex-direction:column;gap:8px;max-width:860px;padding:4px 2px}
 .talk-row{border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--surface)}
 .talk-row.failed{border-color:color-mix(in srgb,var(--fail) 45%,var(--line))}
 .talk-head{font-size:.85rem;margin-bottom:4px}
@@ -1316,15 +1319,19 @@ function fileToImage(file) {
     r.readAsDataURL(file);
   });
 }
-function composer(a) {
+// The message box. `a`: the agent it writes to. `o` makes it another box with the same tools (Team talk):
+// { key: draft key, id, placeholder, names(): the @ list, send(text, images): true when sent }.
+function composer(a, o = {}) {
+  const key = o.key || a.id;
   const box = h('div', { class: 'attach' });
   const paint = () => { box.textContent = ''; S.attach.forEach((im, i) => box.append(h('span', { class: 'th' }, h('img', { src: im.url, alt: 'Attachment' }), h('button', { type: 'button', text: '×', 'aria-label': 'Remove image', onclick: () => { S.attach.splice(i, 1); paint(); } })))); box.hidden = !S.attach.length; };
   const add = async files => { for (const f of files) { if (!f.type.startsWith('image/')) { toast('Only images can be attached for now.'); continue; } try { S.attach.push(await fileToImage(f)); } catch (e) { toast(e.message); } } paint(); };
-  const ta = h('textarea', { id: 'msg', rows: 1, placeholder: `Message ${a.name}`, 'aria-label': `Message ${a.name}`, value: S.drafts.get(a.id) || '' });
+  const label = o.placeholder || `Message ${a.name}`;
+  const ta = h('textarea', { id: o.id || 'msg', rows: 1, placeholder: label, 'aria-label': label, value: S.drafts.get(key) || '' });
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(220, ta.scrollHeight + 2) + 'px'; };
   const menu = h('div', { class: 'cmds', hidden: true });
   const suggest = () => {
-    const m = /^\/([\w:-]*)$/.exec(ta.value); const all = S.commands.get(a.id) || [];
+    const m = /^\/([\w:-]*)$/.exec(ta.value); const all = (a && S.commands.get(a.id)) || [];
     menu.textContent = '';
     if (!m || !all.length) { menu.hidden = true; return; }
     const hit = all.filter(c => c.toLowerCase().includes(m[1].toLowerCase())).slice(0, 40);
@@ -1338,11 +1345,11 @@ function composer(a) {
     // Send while the mic records (or still writes): the recording is finished and written first, then sent with it.
     sending = true; try { await mic.finish(); } finally { sending = false; }
     const text = ta.value.trim(); if (!text && !S.attach.length) return;
-    const imgs = S.attach; S.attach = []; paint(); ta.value = ''; S.drafts.delete(a.id); grow(); menu.hidden = true;
-    if (!(await send(a, text, imgs))) { ta.value = text; S.attach = imgs; paint(); }
+    const imgs = S.attach; S.attach = []; paint(); ta.value = ''; S.drafts.delete(key); grow(); menu.hidden = true;
+    if (!(await (o.send ? o.send(text, imgs) : send(a, text, imgs)))) { ta.value = text; S.attach = imgs; paint(); }
   };
-  const at = atMenu(ta, () => teamOf(a.projectId).filter(x => x.id !== a.id).map(x => x.name));
-  ta.addEventListener('input', () => { S.drafts.set(a.id, ta.value); grow(); suggest(); });
+  const at = atMenu(ta, o.names || (() => teamOf(a.projectId).filter(x => x.id !== a.id).map(x => x.name)));
+  ta.addEventListener('input', () => { S.drafts.set(key, ta.value); grow(); suggest(); });
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } if (e.key === 'Escape') menu.hidden = true; });
   ta.addEventListener('paste', e => { const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/')); if (files.length) { e.preventDefault(); add(files); } });
   const file = h('input', { type: 'file', accept: 'image/*', multiple: '', hidden: true, onchange: e => { add([...e.target.files]); e.target.value = ''; } });
@@ -1536,7 +1543,7 @@ function viewTalk() {
     e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null);
   const paint = entries => {
     list.replaceChildren(...(entries.length ? entries.map(row) : [h('span', { class: 'sub', text: 'No team talk yet. An agent reaches a teammate by starting a paragraph of its answer with @Name; you can write here with @Name or @team.' })]));
-    list.scrollTop = list.scrollHeight;
+    requestAnimationFrame(() => { const sc = list.closest('.talk-pane'); if (sc) sc.scrollTop = sc.scrollHeight; });
   };
   let entries = [];
   api('GET', `/api/team?project=${encodeURIComponent(p.id)}`).then(d => { entries = d.entries || []; paint(entries); }).catch(x => list.replaceChildren(h('span', { class: 'err', text: x.message })));
@@ -1548,23 +1555,23 @@ function viewTalk() {
     paint(entries);
   };
   const names = teamOf(p.id).map(a => a.name);
-  const box = h('input', { class: 'find', type: 'text', id: 'talk-say', placeholder: `@${names[0] || 'Name'} your message   ·   @team for everyone`, 'aria-label': 'Write to an agent with @Name, or @team', autocomplete: 'off', style: 'flex:1 1 320px' });
-  const atList = atMenu(box, () => teamOf(p.id).map(a => a.name));
-  const sendB = h('button', { class: 'btn primary', type: 'submit', text: 'Send' });
-  const form = h('form', { class: 'acts', onsubmit: async ev => {
-    ev.preventDefault();
-    const text = box.value.trim(); if (!text) return;
-    sendB.disabled = true;
-    try { const d = await api('POST', '/api/team', { project: p.id, text }); box.value = ''; if (d.skipped && d.skipped.length) toast('Not sent to: ' + d.skipped.join('; ')); }
-    catch (x) { toast(x.message); }
-    sendB.disabled = false; box.focus();
-  } }, h('div', { style: 'position:relative;flex:1 1 320px;display:flex' }, atList, box), sendB);
+  // The same message box as an agent's chat: images, mic, the @ list. Pictures go to every agent named.
+  const form = composer(null, {
+    key: 'talk:' + p.id, id: 'talk-say', placeholder: 'Write to @Name or @team',
+    names: () => teamOf(p.id).map(a => a.name),
+    send: async (text, imgs) => {
+      try {
+        const d = await api('POST', '/api/team', { project: p.id, text, images: imgs.map(i => ({ mediaType: i.mediaType, data: i.data })) });
+        if (d.skipped && d.skipped.length) toast('Not sent to: ' + d.skipped.join('; '));
+        return true;
+      } catch (x) { toast(x.message); return false; }
+    },
+  });
   const hubNote = S.hub && S.hub.state === 'connected' ? null
     : h('span', { class: 'hint', text: 'The Agent Hub is not connected, so agents cannot reach each other with @Name right now. What you write here still goes to their windows.' });
-  setTimeout(() => box.focus(), 0);
-  return h('div', { class: 'pane talk-pane' }, h('h2', { text: `Team talk · ${p.name}` }),
+  return h('div', { class: 'talk-view' }, h('div', { class: 'pane talk-pane' }, h('h2', { text: `Team talk · ${p.name}` }),
     h('span', { class: 'sub', text: `Agents: ${names.join(', ') || 'none'}. Each @Name paragraph an agent writes is delivered to that teammate.` }),
-    hubNote, list, form);
+    hubNote, list), form);
 }
 function viewTeam() {
   const p = curProject(); const picked = new Set(); const list = h('div', { class: 'list' });
