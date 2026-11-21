@@ -29,3 +29,10 @@ test('only audio is taken, and not an empty one', async () => {
   assert.equal((await post('', 'text/plain', 'hello')).status, 415);
   assert.equal((await post('', 'audio/mp4', Buffer.alloc(0))).status, 400);
 });
+
+test('tapping the mic warms the model up, and the recording after it still comes back', async () => {
+  const w = await fetch(`${c.base}/api/transcribe/warm`, { method: 'POST' });
+  assert.equal(w.status, 202);
+  const r = await post('', 'audio/mp4', Buffer.alloc(7, 1));
+  assert.equal(r.json.text, 'heard 7 bytes in auto');
+});

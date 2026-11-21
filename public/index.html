@@ -272,6 +272,19 @@ a.artlink svg{width:14px;height:14px;flex:none}
 .mic.on svg{animation:pulse 1.2s ease-in-out infinite}
 .mic.busy{color:var(--accent)}
 .mic.busy svg{animation:pulse .8s ease-in-out infinite}
+/* The recording bar: in place of the text box while the mic records or the text is being written. */
+.recbar{display:flex;align-items:center;gap:10px;flex:1 1 auto;min-width:0;min-height:44px;padding:0 8px;order:1;font-size:.9rem;color:var(--ink-2)}
+.recbar[hidden]{display:none}
+.rec-dot{width:10px;height:10px;border-radius:50%;background:var(--fail);flex:none;animation:pulse 1.2s ease-in-out infinite}
+.rec-time{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);flex:none}
+.rec-level{display:flex;align-items:center;gap:2px;height:24px;flex:1 1 auto;min-width:40px;overflow:hidden}
+.rec-level i{display:block;width:3px;height:100%;border-radius:2px;background:var(--fail);transform:scaleY(.12);transition:transform .08s linear;flex:none}
+.rec-say{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
+.recbar.writing .rec-dot{background:var(--accent)}
+.recbar.writing .rec-level,.recbar.writing .rec-time{display:none}
+.under-rec{display:none!important}
+@media (max-width:760px){.recbar .rec-say{display:none}.recbar.writing .rec-say{display:block}}
+@media (prefers-reduced-motion:reduce){.rec-dot{animation:none}}
 @media (prefers-reduced-motion:reduce){.mic.on svg{animation:none}}
 /* Phone: the message box gets its own full line, and text in boxes is 16px so iPhone does not zoom in on a tap. */
 .c-send svg{display:none}
@@ -1150,14 +1163,44 @@ function micButton(ta) {
     if (S.micStop === stop) S.micStop = null;
   };
   // iPhone and iPad: the browser's own dictation is unreliable there and missing in a Home Screen app. The mic
-  // records instead; a second tap stops, and this PC turns the recording into text (Whisper).
-  let recorder = null, busy = false;
+  // records instead; a second tap stops, and this PC turns the recording into text (Whisper). The first tap also
+  // wakes Whisper on the PC, so it is ready when the person stops. Whisper hears the language by itself.
+  // While recording, a bar in place of the text box shows a red dot, the time and how loud the voice is; after
+  // the stop it says the text is being written.
+  let recorder = null, busy = false, meter = null;
   const report = (step, detail = '') => { fetch('/api/mic-log', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ step, detail: String(detail) }) }).catch(() => {}); };
+  const bars = Array.from({ length: 24 }, () => h('i'));
+  const clock = h('span', { class: 'rec-time', text: '0:00' });
+  const words = h('span', { class: 'rec-say', text: 'Listening… tap the mic to finish' });
+  const recbar = h('div', { class: 'recbar', hidden: true, role: 'status', 'aria-live': 'polite' }, h('span', { class: 'rec-dot' }), clock, h('span', { class: 'rec-level', 'aria-hidden': 'true' }, ...bars), words);
+  const showBar = mode => {
+    if (!recbar.parentNode && ta.parentNode) ta.parentNode.insertBefore(recbar, ta);
+    recbar.hidden = !mode; recbar.className = 'recbar' + (mode ? ' ' + mode : ''); ta.classList.toggle('under-rec', !!mode);
+    words.textContent = mode === 'writing' ? 'Writing what you said…' : 'Listening… tap the mic to finish';
+  };
+  const startMeter = stream => {
+    const t0 = Date.now(); let ctx = null, an = null, data = null;
+    try { const AC = window.AudioContext || window.webkitAudioContext; ctx = new AC(); if (ctx.resume) ctx.resume(); an = ctx.createAnalyser(); an.fftSize = 512; ctx.createMediaStreamSource(stream).connect(an); data = new Uint8Array(an.fftSize); } catch { /* the time still runs */ }
+    const level = [];
+    let raf = 0;
+    const tick = () => {
+      const s = Math.floor((Date.now() - t0) / 1000); clock.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      if (an) {
+        an.getByteTimeDomainData(data); let sum = 0; for (const v of data) sum += (v - 128) * (v - 128);
+        level.push(Math.min(1, Math.sqrt(sum / data.length) / 40)); if (level.length > bars.length) level.shift();
+        bars.forEach((el, i) => { el.style.transform = `scaleY(${Math.max(0.12, level[i - (bars.length - level.length)] || 0.12)})`; });
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+    return { stop: () => { cancelAnimationFrame(raf); try { if (ctx) ctx.close(); } catch { /* closed */ } } };
+  };
   const record = async () => {
     if (busy) return report('tap', 'still writing the last one');
     if (recorder) { report('stop', recorder.state); recorder.stop(); return; }
     report('tap', `mediaDevices=${!!navigator.mediaDevices?.getUserMedia} MediaRecorder=${!!window.MediaRecorder} secure=${window.isSecureContext} standalone=${!!navigator.standalone} ua=${navigator.userAgent}`);
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('This browser cannot record. Use the microphone key on the keyboard instead.');
+    fetch('/api/transcribe/warm', { method: 'POST' }).catch(() => {});
     let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
     catch (x) { report('denied', `${x.name}: ${x.message}`); return toast(`The microphone did not start (${x.name}). On iPhone: Settings > Safari > Microphone, or the aA button in the address bar > Website Settings.`); }
     if (S.micStop) S.micStop();
@@ -1167,16 +1210,19 @@ function micButton(ta) {
     mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     mr.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
+      if (meter) { meter.stop(); meter = null; }
       const cancelled = recorder !== mr; recorder = null;
       report('stopped', `cancelled=${cancelled} chunks=${chunks.length} bytes=${chunks.reduce((n, c) => n + c.size, 0)} type=${mr.mimeType}`);
       if (!cancelled && !chunks.length) toast('Nothing was recorded.');
       if (cancelled || !chunks.length) return idle();
       busy = true; b.classList.remove('on'); b.classList.add('busy'); label.textContent = 'Writing…'; b.setAttribute('aria-pressed', 'false');
+      showBar('writing');
       const blob = new Blob(chunks, { type: mr.mimeType || 'audio/mp4' });
       try {
-        const res = await fetch(`/api/transcribe?lang=${encodeURIComponent(store.get('cockpit.speech') || navigator.language || '')}`, { method: 'POST', headers: { 'content-type': (blob.type || 'audio/mp4').split(';')[0] }, body: blob });
+        const res = await fetch('/api/transcribe', { method: 'POST', headers: { 'content-type': (blob.type || 'audio/mp4').split(';')[0] }, body: blob });
         const d = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(d.error || `Speech to text failed (${res.status})`);
+        showBar(null);
         if (d.text) { ta.value = (ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value) + d.text; ta.dispatchEvent(new Event('input')); ta.focus(); }
         else toast('Nothing was heard.');
       } catch (x) { report('send', x.message); toast(x.message); }
@@ -1184,10 +1230,11 @@ function micButton(ta) {
     };
     try { mr.start(); } catch (x) { stream.getTracks().forEach(t => t.stop()); recorder = null; report('start', `${x.name}: ${x.message}`); return toast('Recording could not start: ' + x.message); }
     report('recording', mr.mimeType);
+    meter = startMeter(stream); showBar('rec');
     b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); label.textContent = 'Listening';
     S.micStop = () => { if (recorder === mr) { recorder = null; mr.stop(); } };
   };
-  const idle = () => { b.classList.remove('on', 'busy'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic'; if (S.micStop && !recorder) S.micStop = null; };
+  const idle = () => { showBar(null); b.classList.remove('on', 'busy'); b.setAttribute('aria-pressed', 'false'); label.textContent = 'Mic'; if (S.micStop && !recorder) S.micStop = null; };
   b.addEventListener('click', () => {
     if (IOS || recorder || busy) return record();
     if (rec) return stop();

@@ -950,14 +950,15 @@ function readRaw(req, max) {
   });
 }
 // ── Speech to text for the phone: one Whisper worker (transcribe-worker.py), started on first use and kept
-// while it is used, so the model loads once. Closed after 10 idle minutes to give the memory back.
+// while it is used, so the model loads once. Closed after 30 idle minutes to give the memory back.
 // COCKPIT_TRANSCRIBE_CMD (a JSON list) replaces the command, for example another Python.
 let transcriber = null;
 function transcriberCmd() {
   try { const c = JSON.parse(process.env.COCKPIT_TRANSCRIBE_CMD || ''); if (Array.isArray(c) && c.length) return c.map(String); } catch { /* default */ }
   return process.platform === 'win32' ? ['py', '-3', '-u', path.join(ROOT, 'transcribe-worker.py')] : ['python3', '-u', path.join(ROOT, 'transcribe-worker.py')];
 }
-function transcribe(file, lang) {
+// `warm`: only load the model (the mic was tapped; the recording follows).
+function transcribe(file, lang, warm = false) {
   if (!transcriber) {
     const [cmd, ...args] = transcriberCmd();
     const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
@@ -990,13 +991,13 @@ function transcribe(file, lang) {
       resolve: v => { clearTimeout(timer); resolve(v); idleLater(t); },
       reject: e => { clearTimeout(timer); reject(e); idleLater(t); },
     });
-    t.child.stdin.write(JSON.stringify({ id, file, lang }) + '\n');
+    t.child.stdin.write(JSON.stringify(warm ? { id, warm: true } : { id, file, lang }) + '\n');
   });
 }
 function idleLater(t) {
   clearTimeout(t.idle);
   if (t.waiting.size) return;
-  t.idle = setTimeout(() => { if (transcriber === t && !t.waiting.size) { transcriber = null; try { t.child.kill(); } catch { /* gone */ } } }, 10 * 60_000);
+  t.idle = setTimeout(() => { if (transcriber === t && !t.waiting.size) { transcriber = null; try { t.child.kill(); } catch { /* gone */ } } }, 30 * 60_000);
   t.idle.unref?.();
 }
 function cookieToken(req) {
@@ -1437,6 +1438,11 @@ const routes = {
     setTimeout(shutdown, 500);
   },
   // The phone's microphone: a recording (the raw body, audio/*) comes back as text, made on this PC by Whisper.
+  // The mic was tapped: load Whisper now, while the person speaks, so the text comes soon after they stop.
+  'POST /api/transcribe/warm': async (req, res) => {
+    transcribe('', '', true).catch(e => console.log('Speech to text could not warm up: ' + e.message));
+    json(res, 202, { ok: true });
+  },
   'POST /api/transcribe': async (req, res, url) => {
     const type = String(req.headers['content-type'] || '').toLowerCase();
     if (!type.startsWith('audio/')) return json(res, 415, { error: 'Send a recording (audio).' });

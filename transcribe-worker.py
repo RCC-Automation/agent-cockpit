@@ -25,6 +25,11 @@ for line in sys.stdin:
     req = {}
     try:
         req = json.loads(line)
+        if req.get("warm"):  # the mic was tapped: load the model while the person speaks
+            load()
+            sys.stdout.write(json.dumps({"id": req.get("id"), "text": ""}) + "\n")
+            sys.stdout.flush()
+            continue
         result = load().transcribe(req["file"], language=req.get("lang") or None, fp16=False)
         out = {"id": req.get("id"), "text": (result.get("text") or "").strip()}
     except Exception as e:  # one bad recording must not end the worker
