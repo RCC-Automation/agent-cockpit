@@ -39,7 +39,10 @@ A small control station for your Claude Code agents. It runs on your own PC and 
   the iPhone, and the audio never leaves this PC. It needs Python with `faster-whisper` (fast, as OM Studio uses it)
   or `openai-whisper`; `data/whisper-python.txt` can name that Python, for example OM Studio's
   `.venv\Scripts\python.exe`.
-- **Look.** The Aa button sets the theme (light, dark, midnight, paper, high contrast, or follow the PC) and the
+- **Menu.** The ⋯ button next to the project holds Settings, Team list, Wake all, Sessions, New project, Notify me,
+  Look and text size, and Shut down.
+- **Colors.** Every agent keeps one color, in the list and in Team talk, so who talks to whom shows at a glance.
+- **Look.** Look and text size (in the ⋯ menu) sets the theme (light, dark, midnight, paper, high contrast, or follow the PC) and the
   text size. The choice is kept per browser.
 - **Status.** Agents are sorted by what needs you: Needs you, Ready to review, Working, Failed, Idle.
 - **Stop.** Only on request. Close window closes the PowerShell window of an agent the cockpit opened. Interrupt
@@ -145,7 +148,7 @@ paragraph to the end of the answer (or to the next `@Name` paragraph) through th
 of several paragraphs, like a song or a list, arrives whole. A teammate whose own bridge tools listen gets it directly; any other (Codex, Hermes)
 gets a one-line notice naming a file in `data/team/inbox` that holds the message, and answers the same way,
 with `@Name`. You can do the same: `@REBE …` typed in any agent's chat goes to REBE instead, and the
-**Team talk** button shows the whole conversation of the project, with a box to write in: with `@Name` it goes
+**Team talk** card, at the top of the agent list, shows the whole conversation of the project, with a box to write in: with `@Name` it goes
 to that agent, and without any `@Name` (or with `@team`) to every agent of the project.
 Claude Code agents are told this rule when the cockpit opens their window; Codex, Hermes and other agents get it
 with the first team message the cockpit types into their window. When you write to an agent with `@Name`, what it

@@ -92,7 +92,7 @@ a{color:var(--accent)}
 .rail{border-right:1px solid var(--line);overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:2px;background:var(--surface-2)}
 .rail .grp{font-family:var(--mono);font-size:.66rem;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);padding:10px 8px 4px}
 .rail .empty{padding:14px 8px;color:var(--ink-3);font-size:.8rem}
-.row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:2px 8px;width:100%;text-align:left;border:0;background:transparent;padding:7px 8px;border-radius:7px;cursor:pointer}
+.row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:1px 10px;width:100%;text-align:left;border:0;background:transparent;padding:7px 8px;border-radius:10px;cursor:pointer}
 .row:hover{background:color-mix(in srgb,var(--ink) 6%,transparent)}
 .row[aria-current="true"]{background:var(--surface);box-shadow:0 0 0 1px var(--line)}
 .row .cs{font-family:var(--mono);font-weight:600;font-size:.8125rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -309,9 +309,47 @@ a.artlink svg{width:14px;height:14px;flex:none}
 .talk-view{display:flex;flex-direction:column;flex:1;min-height:0}
 .talk-view .talk-pane{flex:1;min-height:0;overflow-y:auto}
 .talk{display:flex;flex-direction:column;gap:8px;max-width:860px;padding:4px 2px}
-.talk-row{border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--surface)}
-.talk-row.failed{border-color:color-mix(in srgb,var(--fail) 45%,var(--line))}
-.talk-row.held{border-color:color-mix(in srgb,var(--need) 60%,var(--line))}
+.talk-row{display:flex;align-items:flex-start;gap:10px;max-width:100%}
+.talk-row .bubble{flex:1;min-width:0;border:1px solid var(--line);border-left:4px solid var(--ac);border-radius:14px;padding:9px 13px;background:color-mix(in srgb,var(--ac) 6%,var(--surface))}
+.talk-row.me{justify-content:flex-end}
+.talk-row.me .bubble{flex:0 1 auto;max-width:min(88%,640px);border-left-width:1px;border-color:color-mix(in srgb,var(--accent) 35%,var(--line));background:color-mix(in srgb,var(--accent) 14%,var(--surface));border-bottom-right-radius:4px}
+.talk-row:not(.me) .bubble{border-top-left-radius:4px}
+.talk-row.failed .bubble{border-color:color-mix(in srgb,var(--fail) 45%,var(--line));border-left-color:var(--ac)}
+.talk-row.held .bubble{border-color:color-mix(in srgb,var(--need) 60%,var(--line));border-left-color:var(--ac)}
+.talk-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:5px}
+.talk-head .arrow{color:var(--ink-3);font-weight:700}
+.talk-head .when{margin-left:auto;font-size:.72rem;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.tag{display:inline-flex;align-items:center;gap:5px;font-size:.76rem;font-weight:700;letter-spacing:.02em;padding:2px 9px;border-radius:99px;color:color-mix(in srgb,var(--ac) 70%,var(--ink));background:color-mix(in srgb,var(--ac) 16%,transparent);border:1px solid color-mix(in srgb,var(--ac) 35%,transparent);white-space:nowrap}
+.tag.all{--ac:var(--ink-2)}
+.talk-top{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
+.talk-top h2{margin:0}
+.talk-who{display:flex;gap:6px;flex-wrap:wrap}
+.talk-who .tag{padding-left:3px}
+.av{--ac:var(--ink-3);position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;width:34px;height:34px;border-radius:50%;font-size:.72rem;font-weight:800;letter-spacing:.02em;color:#fff;background:var(--ac);box-shadow:inset 0 0 0 1px rgb(255 255 255 / .15)}
+.av.sm{width:26px;height:26px;font-size:.6rem;box-shadow:0 0 0 2px var(--surface-2)}
+.av.xs{width:18px;height:18px;font-size:.5rem;box-shadow:none}
+.av.more{--ac:var(--ink-3)}
+.avw{position:relative;grid-row:1 / 3;display:inline-flex}
+.avw .dot{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border:2px solid var(--surface-2)}
+.talk-card{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;gap:2px 10px;align-items:center;width:100%;text-align:left;cursor:pointer;margin:4px 0 8px;padding:11px 12px;border-radius:14px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 20%,var(--surface)),color-mix(in srgb,var(--accent) 6%,var(--surface)));box-shadow:0 2px 12px color-mix(in srgb,var(--accent) 14%,transparent);color:var(--ink)}
+.talk-card:hover{border-color:var(--accent)}
+.talk-card[aria-current="true"]{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
+.talk-card .group{grid-row:1 / 3;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:12px;background:var(--accent);color:var(--accent-ink);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 40%,transparent)}
+.talk-card .tc-t{display:flex;align-items:center;gap:8px;font-size:.95rem}
+.talk-card .tc-s{font-size:.75rem;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.talk-card .badge{background:var(--accent);color:var(--accent-ink);font-size:.68rem;font-weight:800;border-radius:99px;padding:1px 7px}
+.talk-card.new .tc-s{color:var(--ink);font-weight:600}
+.ibtn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink-2);cursor:pointer;flex:none}
+.ibtn:hover,.ibtn[aria-expanded="true"]{color:var(--ink);border-color:var(--ink-3)}
+.bar{position:relative}
+.more-pop{position:absolute;top:calc(100% - 4px);left:14px;z-index:30;min-width:240px;display:flex;flex-direction:column;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 12px 32px rgb(0 0 0 / .25)}
+.more-h{font-size:.66rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:8px 10px 4px}
+.mi{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:transparent;padding:8px 10px;border-radius:8px;font-weight:500;cursor:pointer;color:var(--ink)}
+.mi:hover{background:color-mix(in srgb,var(--ink) 7%,transparent)}
+.mi:disabled{opacity:.45;cursor:default}
+.mi.danger{color:var(--fail)}
+.mi-i{width:20px;text-align:center;font-size:.85rem;color:var(--ink-3)}
+.mi.danger .mi-i{color:var(--fail)}
 .talk-held{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;color:var(--need);font-weight:600;font-size:.85rem}
 .talk-mark{align-self:center;font-size:.75rem;color:var(--ink-3);padding:2px 0}
 .talk-limit{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 16px 0;font-size:.8rem;color:var(--ink-2)}
@@ -343,8 +381,12 @@ a.artlink svg{width:14px;height:14px;flex:none}
   .mtitle .t{overflow:hidden;text-overflow:ellipsis}
   .mtitle .mdot{display:flex}
   .drawer-in .bar > *{order:2}
-  .drawer-in .bar .name,.drawer-in #project,.drawer-in #btn-settings{order:0}
+  .drawer-in .bar .name,.drawer-in #project,.drawer-in #btn-menu2{order:0}
   .drawer-in .bar .counts,.drawer-in .bar .conn{order:1;flex-basis:100%}
+  .drawer-in #btn-new{order:3;flex-basis:100%;padding:10px;border-radius:12px;font-size:.95rem}
+  .drawer-in .more-pop{order:2;position:static;flex-basis:100%;box-shadow:none;background:var(--surface)}
+  .drawer-in .ibtn{width:40px;height:40px}
+  .drawer-in .mi{padding:11px 10px}
   .drawer{display:block;position:fixed;inset:0;z-index:25;background:rgb(0 0 0 / .35);opacity:0;transition:opacity .2s}
   .drawer.open{opacity:1}
   .drawer[hidden]{display:none}
@@ -398,18 +440,22 @@ a.artlink svg{width:14px;height:14px;flex:none}
 <div class="bar" id="bar">
   <span class="name">Cockpit</span>
   <select id="project" aria-label="Project"></select>
-  <button class="btn sm" id="btn-settings" type="button" title="Name, team notes and permissions of this project">Settings</button>
-  <button class="btn sm" id="btn-project" type="button">+ Project</button>
+  <button class="ibtn" id="btn-menu2" type="button" aria-label="More" title="More" aria-haspopup="true" aria-expanded="false" aria-controls="more-pop"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg></button>
   <span class="counts" id="counts"></span>
   <span class="conn" id="conn" hidden>reconnecting…</span>
-  <button class="btn sm" id="btn-notify" type="button" hidden>Notify me</button>
-  <button class="btn sm" id="btn-look" type="button" title="Theme and text size" aria-haspopup="true">Aa</button>
-  <button class="btn sm" id="btn-off" type="button" title="Stop the cockpit itself. Agents in terminal windows keep running.">Shut down</button>
-  <button class="btn" id="btn-team" type="button" title="All agents of this project: wake or remove the ones you pick">Team</button>
-  <button class="btn" id="btn-talk" type="button" title="What the agents of this project say to each other with @Name, and a box to write to them">Team talk</button>
-  <button class="btn" id="btn-wake" type="button" title="Open a terminal window for every agent of this project that is not running">Wake all</button>
-  <button class="btn" id="btn-resume" type="button">Sessions</button>
   <button class="btn primary" id="btn-new" type="button">+ New agent</button>
+  <div class="more-pop" id="more-pop" role="menu" hidden>
+    <div class="more-h">This project</div>
+    <button class="mi" id="btn-settings" type="button" role="menuitem" title="Name, team notes and permissions of this project"><span class="mi-i" aria-hidden="true">⚙</span>Settings</button>
+    <button class="mi" id="btn-team" type="button" role="menuitem" title="All agents of this project: wake or remove the ones you pick"><span class="mi-i" aria-hidden="true">☰</span>Team list</button>
+    <button class="mi" id="btn-wake" type="button" role="menuitem" title="Open a terminal window for every agent of this project that is not running"><span class="mi-i" aria-hidden="true">☀</span>Wake all</button>
+    <button class="mi" id="btn-resume" type="button" role="menuitem"><span class="mi-i" aria-hidden="true">↺</span>Sessions</button>
+    <div class="more-h">Cockpit</div>
+    <button class="mi" id="btn-project" type="button" role="menuitem"><span class="mi-i" aria-hidden="true">+</span>New project</button>
+    <button class="mi" id="btn-notify" type="button" role="menuitem" hidden><span class="mi-i" aria-hidden="true">🔔</span>Notify me</button>
+    <button class="mi" id="btn-look" type="button" role="menuitem" title="Theme and text size" aria-haspopup="true"><span class="mi-i" aria-hidden="true">Aa</span>Look and text size</button>
+    <button class="mi danger" id="btn-off" type="button" role="menuitem" title="Stop the cockpit itself. Agents in terminal windows keep running."><span class="mi-i" aria-hidden="true">⏻</span>Shut down</button>
+  </div>
 </div>
 <div class="body">
   <nav class="rail" id="rail" aria-label="Agents"></nav>
@@ -425,8 +471,12 @@ const TOOLS = { claude: 'Claude Code', codex: 'Codex', opencode: 'opencode', her
 const ALLOW_ALL_WARNING = 'With "Allow everything" an agent runs any command and changes or deletes any file without asking you first.\n\nWindows the cockpit opens start without Claude Code\'s own warning screen, because you confirm it here.';
 const KCOL = ['var(--ink-2)', 'var(--review)', 'var(--work)', 'var(--need)', 'var(--done)', 'var(--ink-3)', 'var(--fail)'];
 
+// Every agent keeps one color, in the list and in Team talk, so who talks to whom shows at a glance.
+const AVC = ['#e5484d', '#f76b15', '#d9a400', '#30a46c', '#12a594', '#0090ff', '#6e56cf', '#d6409f', '#8d7b5f', '#3e63dd'];
+function colorOf(name) { if (name === 'You') return 'var(--accent)'; let x = 0; for (const c of String(name || '').toLowerCase()) x = (x * 31 + c.charCodeAt(0)) >>> 0; return AVC[x % AVC.length]; }
+const avatar = (name, cls = '') => h('span', { class: 'av ' + cls, style: `--ac:${colorOf(name)}`, 'aria-hidden': 'true', text: name === 'You' ? 'You' : String(name || '?').slice(0, 2).toUpperCase() });
 const S = { projects: [], agents: new Map(), items: new Map(), commands: new Map(), project: null, cur: null, view: 'chat',
-  drafts: new Map(), attach: [], ctxOpen: false, ctx: new Map(), home: '', detail: false, preview: null };
+  drafts: new Map(), attach: [], talkLast: new Map(), talkUnread: new Map(), ctxOpen: false, ctx: new Map(), home: '', detail: false, preview: null };
 const plain = t => String(t || '').replace(/[*`#]+/g, '').replace(/\s+/g, ' ').trim();
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 
@@ -544,22 +594,33 @@ function renderBar() {
   // The Agent Hub, when one is set up: agents of a project reach each other through it.
   const hs = S.hub && S.hub.state;
   if (hs && hs !== 'off') counts.append(h('span', { class: 'pill ' + (hs === 'connected' ? 's-done' : hs === 'connecting' ? 's-idle' : 's-failed'), title: hs === 'connected' ? 'Connected to the Agent Hub: agents of a project reach each other' : 'The Agent Hub does not answer: ' + (S.hub.error || ''), text: hs === 'connected' ? 'Hub: connected' : hs === 'connecting' ? 'Hub: connecting' : 'Hub: not reachable' }));
-  $('btn-new').disabled = $('btn-resume').disabled = $('btn-wake').disabled = $('btn-team').disabled = $('btn-talk').disabled = $('btn-settings').disabled = !S.project;
+  $('btn-new').disabled = $('btn-resume').disabled = $('btn-wake').disabled = $('btn-team').disabled = $('btn-settings').disabled = !S.project;
   const needAll = [...S.agents.values()].filter(a => a.status === 'need').length;
   document.title = (needAll ? `(${needAll}) ` : '') + 'Cockpit' + (curProject() ? ' · ' + curProject().name : '');
   $('btn-notify').hidden = !('Notification' in window) || Notification.permission !== 'default';
+}
+// Team talk sits on top of the agents: the whole team in one chat. It shows the last message and how many came
+// while you were elsewhere.
+function talkCard(team) {
+  const last = S.talkLast.get(S.project), unread = S.talkUnread.get(S.project) || 0, on = S.view === 'talk';
+  const sub = last ? `${last.from} → ${last.to === 'team' ? 'everyone' : last.to}: ${plain(last.text)}` : `Write to everyone at once · ${team.length} agent${team.length === 1 ? '' : 's'}`;
+  return h('button', { class: 'talk-card' + (unread && !on ? ' new' : ''), type: 'button', 'aria-current': on ? 'true' : null, onclick: () => go('talk') },
+    h('span', { class: 'group', 'aria-hidden': 'true', html: '<svg viewBox="0 0 24 24" width="22" height="22"><circle cx="9" cy="8" r="3.2" fill="currentColor"/><circle cx="17" cy="9" r="2.6" fill="currentColor" opacity=".75"/><path d="M2.5 19c.6-3.6 3.3-5.5 6.5-5.5s5.9 1.9 6.5 5.5z" fill="currentColor"/><path d="M16 13.6c2.7.1 4.8 1.8 5.4 5.4h-4.2c-.2-2-1-3.9-2.4-5.1z" fill="currentColor" opacity=".75"/></svg>' }),
+    h('span', { class: 'tc-t' }, h('b', { text: 'Team talk' }), unread && !on ? h('span', { class: 'badge', text: String(unread) }) : null),
+    h('span', { class: 'tc-s', text: sub }));
 }
 function renderRail() {
   const rail = $('rail'); rail.textContent = ''; paintMbar();
   const team = teamOf(S.project);
   if (!team.length) { rail.append(h('div', { class: 'empty', text: S.project ? 'No agents in this project yet.' : 'Create a project to start.' })); return; }
+  rail.append(talkCard(team));
   for (const s of ORDER) {
     const list = team.filter(a => a.status === s).sort((x, y) => (y.updatedAt || 0) - (x.updatedAt || 0));
     if (!list.length) continue;
     rail.append(h('div', { class: 'grp', text: `${ST[s]} · ${list.length}` }));
     for (const a of list) {
       rail.append(h('button', { class: 'row s-' + a.status, type: 'button', 'aria-current': a.id === S.cur && S.view === 'chat' ? 'true' : null, onclick: () => openAgent(a.id) },
-        h('span', { class: 'dot' }), h('span', { class: 'cs', text: a.name }), h('span', { class: 'ago', text: (a.harness && a.harness !== 'claude' ? a.harnessLabel + ' · ' : a.mode === 'watch' ? 'terminal · ' : '') + ago(a.updatedAt) }),
+        h('span', { class: 'avw' }, avatar(a.name), h('span', { class: 'dot', title: ST[a.status] })), h('span', { class: 'cs', text: a.name }), h('span', { class: 'ago', text: (a.harness && a.harness !== 'claude' ? a.harnessLabel + ' · ' : a.mode === 'watch' ? 'terminal · ' : '') + ago(a.updatedAt) }),
         h('span', { class: 'last', text: plain(a.last) }), a.ctx != null ? meter(a.ctx) : null));
     }
   }
@@ -1539,18 +1600,22 @@ function whereText(a) {
 // Team talk: what the agents of the project said to each other with @Name, and what you said to them. Live.
 function viewTalk() {
   const p = curProject();
+  const tag = n => h('span', { class: 'tag', style: `--ac:${colorOf(n)}`, text: n });
   const list = h('div', { class: 'talk', role: 'log', 'aria-live': 'polite' }, h('span', { class: 'sub', text: 'Loading…' }));
   const goOn = async btn => { btn.disabled = true; try { await api('POST', '/api/team/continue', { project: p.id }); } catch (x) { toast(x.message); btn.disabled = false; } };
   const row = e => e.via === 'continue'
     ? h('div', { class: 'talk-mark', text: `You let them continue · ${new Date(e.at).toLocaleTimeString()}` })
-    : h('div', { class: 'talk-row' + (e.held ? ' held' : e.ok === false ? ' failed' : '') },
+    : h('div', { class: 'talk-row' + (e.from === 'You' ? ' me' : '') + (e.held ? ' held' : e.ok === false ? ' failed' : ''), style: `--ac:${colorOf(e.from)}` },
+    e.from === 'You' ? null : avatar(e.from),
+    h('div', { class: 'bubble' },
     h('div', { class: 'talk-head' },
-      h('b', { text: e.from || '?' }), h('span', { class: 'hint', text: ' → ' }), h('b', { text: e.to === 'team' ? 'everyone' : (e.to || '?') }),
-      h('span', { class: 'hint', text: `  ·  ${new Date(e.at).toLocaleTimeString()}${e.via === 'hub' || e.arrived ? '  ·  arrived' : ''}` })),
+      tag(e.from || '?'), h('span', { class: 'arrow', 'aria-label': 'to', text: '→' }),
+      e.to === 'team' ? h('span', { class: 'tag all', text: 'Everyone' }) : String(e.to || '?').split(', ').map(tag),
+      h('span', { class: 'when', text: `${new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${e.via === 'hub' || e.arrived ? ' · ✓ arrived' : ''}` })),
     h('div', { class: 'talk-text', text: e.text || '' }),
     e.held ? h('div', { class: 'talk-held' }, h('span', { text: 'Waiting for you: ' + e.error.replace(/^held: /, '').replace(/\. (Press Continue|Write in Team talk).*$/, '') + '.' }),
       h('button', { class: 'btn sm primary', type: 'button', text: 'Let them continue', onclick: ev => goOn(ev.currentTarget) }))
-    : e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null);
+    : e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null));
   const paint = entries => {
     list.replaceChildren(...(entries.length ? entries.map(row) : [h('span', { class: 'sub', text: 'No team talk yet. An agent reaches a teammate by starting a paragraph of its answer with @Name; what you write here goes to everyone, or to one agent with @Name.' })]));
     requestAnimationFrame(() => { const sc = list.closest('.talk-pane'); if (sc) sc.scrollTop = sc.scrollHeight; });
@@ -1582,8 +1647,8 @@ function viewTalk() {
   const limitRow = h('label', { class: 'talk-limit' }, 'Agents may talk ', limit, ' in a row, then wait for my Continue');
   const hubNote = S.hub && S.hub.state === 'connected' ? null
     : h('span', { class: 'hint', text: 'The Agent Hub is not connected, so agents cannot reach each other with @Name right now. What you write here still goes to their windows.' });
-  return h('div', { class: 'talk-view' }, h('div', { class: 'pane talk-pane' }, h('h2', { text: `Team talk · ${p.name}` }),
-    h('span', { class: 'sub', text: `Agents: ${names.join(', ') || 'none'}. Each @Name paragraph an agent writes is delivered to that teammate.` }),
+  return h('div', { class: 'talk-view' }, h('div', { class: 'pane talk-pane' }, h('div', { class: 'talk-top' }, h('h2', { text: `Team talk · ${p.name}` }),
+    h('div', { class: 'talk-who' }, ...names.map(n => h('span', { class: 'tag', style: `--ac:${colorOf(n)}` }, avatar(n, 'xs'), n)))),
     hubNote, list), limitRow, form);
 }
 function viewTeam() {
@@ -1687,7 +1752,7 @@ function viewSettings() {
       h('button', { class: 'btn danger', type: 'button', text: 'Remove project', onclick: () => { if (confirm(`Remove the project "${p.name}" and its agents from the cockpit?\nThe folder, all session files and all terminal windows stay untouched.`)) api('DELETE', `/api/projects/${p.id}`).catch(x => toast(x.message)); } })));
   return h('div', { class: 'pane' }, h('h2', { text: 'Project settings' }), form);
 }
-function go(view) { S.view = view; renderRail(); renderMain(); closeDrawer(); }
+function go(view) { S.view = view; if (view === 'talk') S.talkUnread.delete(S.project); renderRail(); renderMain(); closeDrawer(); }
 // ───────── phone layout ─────────
 // On a narrow screen the top bar and the agent list live in a menu that slides in from the left (the ☰ button,
 // or a swipe from the left edge). The same elements are moved, not copied, so every button keeps working.
@@ -1723,7 +1788,7 @@ $('btn-more').addEventListener('click', () => { S.headOpen = !S.headOpen; if (el
 $('drawer').addEventListener('click', e => {
   if (e.target === $('drawer')) return closeDrawer();
   // Picking an agent or a view closes the menu; the project list, Aa and Notify keep it open.
-  const b = e.target.closest('button'); if (b && !['btn-look', 'btn-notify'].includes(b.id)) closeDrawer();
+  const b = e.target.closest('button'); if (b && !['btn-look', 'btn-notify', 'btn-menu2'].includes(b.id)) closeDrawer();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('drawer').hidden) closeDrawer(); });
 // A swipe right from the left edge opens the menu; a swipe left inside it closes it.
@@ -1743,6 +1808,9 @@ function selectProject(id, view) {
   S.cur = team.find(a => a.id === remembered)?.id || team.sort((x, y) => ORDER.indexOf(x.status) - ORDER.indexOf(y.status))[0]?.id || null;
   S.view = view || 'chat'; S.attach = []; S.ctxOpen = false;
   renderBar(); renderRail(); renderMain();
+  if (id && !S.talkLast.has(id)) api('GET', `/api/team?project=${encodeURIComponent(id)}`).then(d => {
+    const e = (d.entries || []).filter(x => x.via !== 'continue').pop(); if (e) { S.talkLast.set(id, e); if (S.project === id) renderRail(); }
+  }).catch(() => {});
 }
 
 // ───────── live updates ─────────
@@ -1772,6 +1840,12 @@ function connect() {
     const ev = JSON.parse(m.data);
     if (ev.t === 'hub') { S.hub = ev.hub; renderBar(); }
     if (ev.t === 'team' && els.talkAdd) els.talkAdd(ev.projectId, ev.entry);
+    if (ev.t === 'team' && ev.entry && ev.entry.via !== 'continue') {
+      const prev = S.talkLast.get(ev.projectId); S.talkLast.set(ev.projectId, ev.entry);
+      const fresh = !prev || prev.id !== ev.entry.id;
+      if (fresh && ev.entry.from !== 'You' && !(S.view === 'talk' && S.project === ev.projectId)) S.talkUnread.set(ev.projectId, (S.talkUnread.get(ev.projectId) || 0) + 1);
+      renderRail();
+    }
     if (ev.t === 'team' && ev.entry && ev.entry.held && !S.heldSeen?.has(ev.entry.id)) {
       (S.heldSeen ||= new Set()).add(ev.entry.id);
       const pn = (S.projects.find(x => x.id === ev.projectId) || {}).name || '';
@@ -1819,7 +1893,14 @@ $('btn-look').addEventListener('click', lookMenu);
 $('btn-project').addEventListener('click', () => go('project'));
 $('btn-settings').addEventListener('click', () => go('settings'));
 $('btn-team').addEventListener('click', () => go('team'));
-$('btn-talk').addEventListener('click', () => go('talk'));
+// The ⋯ menu: opens under its button; a pick, a click outside or Esc closes it.
+function moreMenu(open = $('more-pop').hidden) {
+  $('more-pop').hidden = !open; $('btn-menu2').setAttribute('aria-expanded', String(open));
+}
+$('btn-menu2').addEventListener('click', e => { e.stopPropagation(); moreMenu(); });
+$('more-pop').addEventListener('click', e => { if (e.target.closest('button')) moreMenu(false); });
+document.addEventListener('click', e => { if (!$('more-pop').hidden && !e.target.closest('#more-pop')) moreMenu(false); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('more-pop').hidden) moreMenu(false); });
 $('btn-wake').addEventListener('click', async () => {
   const p = curProject(); if (!p) return;
   const sleeping = teamOf(p.id).filter(a => a.asleep).map(a => a.name);
