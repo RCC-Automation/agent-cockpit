@@ -9,6 +9,13 @@ test("Claude Code's own summary runs are not chats", () => {
   assert.equal(helperRun(''), false);
 });
 
+test('a run that starts with a shell (!) or slash command and has no name is no chat', () => {
+  assert.equal(helperRun('! cd C:/x && git add a.js', ''), true);
+  assert.equal(helperRun('/add-dir', ''), true);
+  assert.equal(helperRun('/add-dir', 'MY AGENT'), false, 'a named chat stays');
+  assert.equal(helperRun('fix the build', ''), false);
+});
+
 test('a chat is taken when its session is an agent, or it carries the name of an agent of the project', () => {
   const agents = [{ name: 'COCKPIT', sessionId: 'new-1', projectId: 'p' }, { name: 'LUNA', sessionId: 'l-1', projectId: 'p' }, { name: 'REBE', sessionId: 'r-1', projectId: 'q' }];
   assert.equal(agentFor({ sessionId: 'old-9', customTitle: 'cockpit' }, agents, 'p'), 'COCKPIT', 'an older chat of the same agent');

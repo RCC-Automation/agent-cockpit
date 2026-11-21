@@ -1,8 +1,11 @@
 // "Bring back an old chat" lists only real chats that are not in the agent list.
 
-// Claude Code starts short runs of its own (for example to summarise a session); they are no chats.
-export function helperRun(firstPrompt) {
-  return /^\s*Below is a conversation log from a Claude Code coding session/i.test(String(firstPrompt || ''));
+// Claude Code starts short runs of its own (for example to summarise a session); they are no chats. Nor is an
+// unnamed run that starts with a shell command ("! git add …") or a slash command ("/add-dir"): one command, no talk.
+export function helperRun(firstPrompt, name = '') {
+  const t = String(firstPrompt || '');
+  if (/^\s*Below is a conversation log from a Claude Code coding session/i.test(t)) return true;
+  return !String(name || '').trim() && /^\s*[!/]/.test(t);
 }
 
 // The agent a session already belongs to: its own session, or (by name) an older chat of an agent of this project,

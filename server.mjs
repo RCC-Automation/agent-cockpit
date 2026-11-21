@@ -1537,7 +1537,7 @@ const routes = {
       return json(res, 200, { sessions: list.slice(0, limit).map(s => ({ sessionId: s.sessionId, title: s.title, named: false, firstPrompt: s.title, cwd: s.cwd, cwdShort: shortPath(s.cwd), gitBranch: '', lastModified: s.lastModified, agent: inRoster.get(s.sessionId) || null, harness: tool.id, profile: s.profile })) });
     }
     // Claude Code's own summary runs are left out; an older chat of an agent counts as that agent (agentFor).
-    const list = (await listSessions(dir ? { dir, limit } : { limit })).filter(s => !helperRun(s.firstPrompt));
+    const list = (await listSessions(dir ? { dir, limit } : { limit })).filter(s => !helperRun(s.firstPrompt, s.customTitle));
     const all = [...agents.values()];
     json(res, 200, { sessions: list.map(s => ({
       sessionId: s.sessionId, title: s.customTitle || s.summary || s.firstPrompt || '(untitled)', named: !!s.customTitle,
