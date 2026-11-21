@@ -51,3 +51,12 @@ export function places() {
   else add('/', '/');
   return out;
 }
+
+// A picture the owner attached and the cockpit saved for a terminal agent (saveImages: <base>/<folder>/<time>-<n>.<ext>),
+// so the chat can show it again. Anything else, or a file that is gone, gives null.
+export function savedPicture(base, rel) {
+  const m = /^([A-Za-z0-9_-]{1,80})[\/](\d{6,20}-\d{1,3}\.(?:png|jpe?g|gif|webp))$/i.exec(String(rel || ''));
+  if (!m) return null;
+  const full = path.join(path.resolve(base), m[1], m[2]);
+  try { return fs.statSync(full).isFile() ? full : null; } catch { return null; }
+}

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
 import { hubConfig, createHubClient, deliveryText, outcomeFor, senderWord, messageIdOf } from './hub-client.mjs';
-import { listDirs, makeDir, places } from './dirs.mjs';
+import { listDirs, makeDir, places, savedPicture } from './dirs.mjs';
 import { helperRun, agentFor } from './oldchats.mjs';
 import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart, isAck } from './team.mjs';
 
@@ -1564,6 +1564,13 @@ const routes = {
     json(res, 200, { folders: folders.slice(0, 40).map(([p, e]) => ({ path: p, short: shortPath(p), sessions: e.count, last: e.last })) });
   },
 
+  // A picture the owner attached for a terminal agent, shown again in the chat (only those, see savedPicture).
+  'GET /api/pic': async (req, res, url) => {
+    const f = savedPicture(path.join(os.tmpdir(), 'agent-cockpit'), url.searchParams.get('f') || '');
+    if (!f) return json(res, 404, { error: 'No such picture.' });
+    res.writeHead(200, { 'content-type': VIEW_TYPES[path.extname(f).toLowerCase()][1], 'cache-control': 'private, max-age=86400' });
+    fs.createReadStream(f).pipe(res);
+  },
   // The folder chooser of New project: the folders inside one folder (default: the first place), and the places.
   'GET /api/dirs': async (req, res, url) => {
     const pl = places(), want = url.searchParams.get('path');

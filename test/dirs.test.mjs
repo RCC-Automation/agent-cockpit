@@ -48,3 +48,14 @@ test('places offers the home folder and only folders that exist', () => {
   assert.ok(p.some(x => x.path === os.homedir()));
   for (const x of p) assert.ok(fs.statSync(x.path).isDirectory(), x.path);
 });
+
+test('savedPicture serves only a picture the cockpit saved, never another file', async () => {
+  const { savedPicture } = await import('../dirs.mjs');
+  const base = tmp();
+  fs.mkdirSync(path.join(base, 'e46d5dff-6ca2'));
+  fs.writeFileSync(path.join(base, 'e46d5dff-6ca2', '1795294134929-0.png'), 'x');
+  assert.equal(savedPicture(base, 'e46d5dff-6ca2/1795294134929-0.png'), path.join(base, 'e46d5dff-6ca2', '1795294134929-0.png'));
+  for (const bad of ['../secret.png', 'e46d5dff-6ca2/../x.png', 'e46d5dff-6ca2/notes.txt', 'e46d5dff-6ca2/1-0.exe', 'e46d5dff-6ca2/9-9.png', 'C:/Windows/x.png', '']) {
+    assert.equal(savedPicture(base, bad), null, `refused: ${bad}`);
+  }
+});
