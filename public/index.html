@@ -150,9 +150,15 @@ a{color:var(--accent)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend i{width:9px;height:9px;border-radius:2px;display:block}
 .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.acts .btn{max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .ctxpanel input{flex:1 1 220px;min-width:0;border:1px solid var(--line);border-radius:7px;background:var(--surface);padding:4px 8px;font-size:.8rem}
 
-.thread{flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.thread{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:16px;display:flex;flex-direction:column;gap:10px}
+/* A long path or word wraps instead of making the chat wider than the screen (it slid sideways on the iPhone). */
+.thread code,.thread a,.peer-body,.note,.talk-text{overflow-wrap:anywhere}
+.thread pre code{overflow-wrap:normal}
+.thread table{display:block;max-width:100%;overflow-x:auto}
+.thread img{max-width:100%}
 .msg{max-width:min(760px,94%);min-width:0}
 .msg.user{align-self:flex-end;background:var(--surface-2);border:1px solid var(--line);border-radius:12px 12px 2px 12px;padding:9px 12px;display:flex;flex-direction:column;gap:8px;white-space:pre-wrap;word-break:break-word}
 .msg.user .imgs{display:flex;gap:6px;flex-wrap:wrap}
@@ -227,7 +233,7 @@ details.steps .r.err{color:var(--fail)} details.steps .r.run{color:var(--work)}
 details.peer{align-self:flex-end;max-width:min(760px,94%);min-width:0;border:1px dashed var(--ink-3);border-radius:10px;padding:6px 11px;font-size:.82rem;color:var(--ink-2)}
 details.peer summary{cursor:pointer;display:flex;gap:8px;align-items:baseline;list-style:none;min-width:0}
 details.peer summary::-webkit-details-marker{display:none}
-details.peer summary b{color:var(--ink);font-weight:600;flex:none}
+details.peer summary b{color:var(--ink);font-weight:600;flex:0 1 auto;min-width:0;overflow-wrap:anywhere}
 details.peer summary .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 details.peer[open] summary .t{display:none}
 .peer-body{white-space:pre-wrap;word-break:break-word;padding-top:8px;color:var(--ink)}
