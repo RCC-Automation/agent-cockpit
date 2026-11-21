@@ -80,3 +80,16 @@ export function ownerMentions(text, names) {
   const words = leading && count === 1 ? lead[2].trim() : String(text || '').trim();
   return { names: found, all, leading, words };
 }
+
+// A message that only confirms, thanks or says it waits ("confirmed.", "standing by.", "thanks, got it"): short,
+// and made only of such words. Two in a row between agents is a loop with nothing in it.
+const ACK_WORDS = new Set(['ok', 'okay', 'k', 'confirmed', 'confirm', 'acknowledged', 'ack', 'ready', 'standing', 'by', 'thanks',
+  'thank', 'you', 'got', 'it', 'understood', 'noted', 'perfect', 'great', 'sounds', 'good', 'will', 'do', 'sure', 'yes', 'cool',
+  'nice', 'roger', 'welcome', 'are', 'youre', 'all', 'set', 'received', 'agreed', 'same', 'here', 'too', 'waiting', 'gracias',
+  'listo', 'vale', 'entendido', 'perfecto', 'de', 'nada', 'danke', 'alles', 'klar', 'gut']);
+export function isAck(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 60 || t.includes('\n')) return false;
+  const words = t.toLowerCase().replace(/[’']/g, '').match(/[a-záéíóúñü]+/g) || [];
+  return words.length > 0 && words.length <= 6 && words.every(w => ACK_WORDS.has(w));
+}

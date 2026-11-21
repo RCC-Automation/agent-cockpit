@@ -1,7 +1,7 @@
 // The @mention rules (team.mjs). Run with:  node --test test/team.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart } from '../team.mjs';
+import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart, isAck } from '../team.mjs';
 
 const names = ['REBE', 'Pancho', 'FABY'];
 
@@ -77,4 +77,12 @@ test('the part of an answer for the user is what comes before the first @Name me
   assert.equal(ownPart('No teammate here, just me.', names), 'No teammate here, just me.');
   assert.equal(ownPart('@REBE only for you', names), '');
   assert.equal(ownPart('I asked @REBE already.', names), 'I asked @REBE already.');
+});
+
+// Two agents only confirming each other ("confirmed." "standing by.") is a loop; real work is not.
+test('a short confirmation is an acknowledgement, real content is not', () => {
+  for (const t of ['confirmed.', 'Standing by.', 'ready.', 'Acknowledged!', 'ok', 'Thanks, got it.', 'Understood 👍', 'Perfect, thank you!', 'Sounds good.', 'You are welcome.'])
+    assert.equal(isAck(t), true, t);
+  for (const t of ['Here is the chorus:\nOh, Noche de Muertos', 'ok, change line 3 to "sugar skulls"', 'Can you share the song?', 'Done: the render is at C:/out/film.mp4'])
+    assert.equal(isAck(t), false, t);
 });

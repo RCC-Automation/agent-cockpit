@@ -204,20 +204,40 @@ describe('with a hub', () => {
     assert.ok(log.some(e => e.via === 'owner' && e.to === 'BETA' && e.text === 'hello, ask @BETA too'));
   });
 
-  // Two agents can answer each other forever ("confirmed." "standing by." ...). After 6 agent messages
-  // with nothing from the owner, the cockpit holds the rest until the owner writes again.
-  test('agents answering each other are held after 6 messages until the owner writes', async () => {
-    const file = path.join(sessionFolder(c.config, teamCwd), `${ALPHA_SID}.jsonl`);
-    const before = sayCalls().length;
-    for (let i = 0; i < 8; i++) {
-      const line = { type: 'assistant', uuid: `u-loop-${i}`, isSidechain: false, sessionId: ALPHA_SID, cwd: teamCwd, message: { role: 'assistant', content: [{ type: 'text', text: `@beta confirmed ${i}.` }] } };
-      fs.appendFileSync(file, JSON.stringify(line) + '\n');
-      await new Promise(r => setTimeout(r, 400));
-    }
+  // Two agents can answer each other forever. The owner picks how many agent messages may go in a row (10, 30, 60,
+  // 100 or no limit); after that they are held, and Continue lets them go on. Only confirming each other is held at once.
+  const answer = (uuid, text) => fs.appendFileSync(path.join(sessionFolder(c.config, teamCwd), `${ALPHA_SID}.jsonl`),
+    JSON.stringify({ type: 'assistant', uuid, isSidechain: false, sessionId: ALPHA_SID, cwd: teamCwd, message: { role: 'assistant', content: [{ type: 'text', text }] } }) + '\n');
+  const teamEntries = async () => (await c.call('GET', `/api/team?project=${(await agentNamed(c, 'ALPHA')).projectId}`)).json.entries;
+
+  test('only the limits on offer can be set, and the project shows its limit', async () => {
     const projectId = (await agentNamed(c, 'ALPHA')).projectId;
-    const held = async () => (await c.call('GET', `/api/team?project=${projectId}`)).json.entries.filter(e => /held/.test(e.error || ''));
-    assert.ok(await until(async () => (await held()).length === 2, 15000), 'the 7th and 8th are held');
-    assert.equal(sayCalls().length - before, 6, 'only 6 go out');
+    assert.equal((await c.call('POST', `/api/projects/${projectId}`, { teamLimit: 7 })).json.project.teamLimit, 30, 'not on offer: the default stays');
+    assert.equal((await c.call('POST', `/api/projects/${projectId}`, { teamLimit: 0 })).json.project.teamLimit, 0, 'no limit');
+    assert.equal((await c.call('POST', `/api/projects/${projectId}`, { teamLimit: 10 })).json.project.teamLimit, 10);
+  });
+
+  test('after the chosen number of agent messages the rest are held, and Continue sends them', async () => {
+    const projectId = (await agentNamed(c, 'ALPHA')).projectId;
+    await c.call('POST', '/api/team', { project: projectId, text: '@BETA start' }); // the owner writes: the count starts here
+    const before = sayCalls().length;
+    for (let i = 0; i < 12; i++) { answer(`u-work-${i}`, `@beta step ${i}: render shot ${i} next.`); await new Promise(r => setTimeout(r, 400)); }
+    const held = async () => (await teamEntries()).filter(e => e.held);
+    assert.ok(await until(async () => (await held()).length === 2, 15000), 'the 11th and 12th are held');
+    assert.equal(sayCalls().length - before, 10, 'only 10 go out');
+    const r = await c.call('POST', '/api/team/continue', { project: projectId });
+    assert.equal(r.status, 200);
+    assert.ok(await until(async () => sayCalls().length - before === 12, 10000), 'Continue sends the two held ones');
+    assert.equal((await held()).length, 0);
+    assert.ok((await teamEntries()).some(e => e.via === 'continue'), 'the Continue shows in Team talk');
+  });
+
+  test('agents only confirming each other are held at the second confirmation', async () => {
+    const before = sayCalls().length;
+    answer('u-ack-1', '@beta Confirmed.'); await new Promise(r => setTimeout(r, 400));
+    answer('u-ack-2', '@beta Standing by.');
+    assert.ok(await until(async () => (await teamEntries()).some(e => e.held && e.text === 'Standing by.'), 15000), 'the second is held');
+    assert.equal(sayCalls().length - before, 1, 'the first confirmation goes');
   });
 
   // Last in this group: it restarts the shared cockpit.

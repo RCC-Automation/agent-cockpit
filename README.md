@@ -148,7 +148,13 @@ with `@Name`. You can do the same: `@REBE …` typed in any agent's chat goes to
 **Team talk** button shows the whole conversation of the project, with a box to write `@Name` or `@team`.
 Claude Code agents are told this rule when the cockpit opens their window; Codex, Hermes and other agents get it
 with the first team message the cockpit types into their window. When you write to an agent with `@Name`, what it
-answers you shows in Team talk as well, until you write to it in its own chat. The Team talk box is the same as a
+answers you shows in Team talk as well, until you write to it in its own chat.
+
+**You stay in charge.** Every agent message shows in Team talk as it happens. Below the talk you choose how many
+agent messages may go in a row without you: 10, 30 (the default), 60, 100, or no limit. After that the next ones
+wait, marked "Waiting for you", with a **Let them continue** button that sends them and starts the count again.
+Two agents that only confirm each other ("confirmed." "standing by.") are stopped at the second one. A waiting
+message also shows as a note in the page, and as a notification when you allowed them (Notify me). The Team talk box is the same as a
 chat's: images, the microphone and the `@` list.
 
 ## iPhone (Tailscale)

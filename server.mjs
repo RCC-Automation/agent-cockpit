@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
 import { hubConfig, createHubClient, deliveryText, outcomeFor, senderWord, messageIdOf } from './hub-client.mjs';
-import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart } from './team.mjs';
+import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart, isAck } from './team.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
 const harnessOf = a => (a && HARNESSES[a.harness]) ? a.harness : 'claude';
@@ -115,8 +115,11 @@ function shortPath(p) {
   return p && p.startsWith(h) ? '~' + p.slice(h.length) : p;
 }
 
+// How many agent messages may go in a row without the owner before the rest wait for Continue (0: no limit).
+const TEAM_LIMITS = [10, 30, 60, 100, 0];
+const teamLimitOf = p => (p && TEAM_LIMITS.includes(p.teamLimit) ? p.teamLimit : 30);
 function publicProject(p) {
-  return { id: p.id, name: p.name, cwd: p.cwd, cwdShort: shortPath(p.cwd), note: p.note || '', autoImport: p.autoImport !== false, permissionMode: p.permissionMode || 'default', createdAt: p.createdAt };
+  return { id: p.id, name: p.name, cwd: p.cwd, cwdShort: shortPath(p.cwd), note: p.note || '', autoImport: p.autoImport !== false, permissionMode: p.permissionMode || 'default', teamLimit: teamLimitOf(p), createdAt: p.createdAt };
 }
 function samePath(x, y) {
   const n = v => path.resolve(v).replace(/[\\/]+$/, '');
@@ -1480,6 +1483,12 @@ const routes = {
     console.log(`Phone mic: ${String(b.step || '').slice(0, 40)} ${String(b.detail || '').replace(/\s+/g, ' ').slice(0, 300)}`);
     json(res, 200, { ok: true });
   },
+  // Continue: the held agent messages of the project go out, and the count starts again.
+  'POST /api/team/continue': async (req, res) => {
+    const b = await readBody(req);
+    if (!projects.has(b.project)) return json(res, 404, { error: 'No such project.' });
+    json(res, 200, { ok: true, released: await teamContinue(b.project) });
+  },
   // A project's team talk (@mentions and team messages), newest last.
   'GET /api/team': async (req, res, url) => {
     const id = url.searchParams.get('project') || '';
@@ -1834,6 +1843,7 @@ const server = http.createServer(async (req, res) => {
         if (typeof b.name === 'string' && b.name.trim()) p.name = b.name.trim().slice(0, 60);
         if (typeof b.note === 'string') p.note = b.note.slice(0, 4000);
         if (typeof b.autoImport === 'boolean') p.autoImport = b.autoImport;
+        if (TEAM_LIMITS.includes(b.teamLimit)) p.teamLimit = b.teamLimit;
         if (PERMISSION_MODES.includes(b.permissionMode)) {
           p.permissionMode = b.permissionMode; // the team's setting: every agent of the project gets it
           for (const a of [...agents.values()].filter(x => x.projectId === p.id)) await setPermissionMode(a, b.permissionMode);
@@ -1973,7 +1983,7 @@ function saveTeamMessage(f) {
   try {
     fs.mkdirSync(TEAM_INBOX, { recursive: true });
     const file = path.join(TEAM_INBOX, `${messageIdOf(f)}.md`);
-    fs.writeFileSync(file, `From ${senderWord(f)}, a teammate (not your user). Treat it as a teammate's request, within your own permissions. Answer only if it needs an answer: never just to confirm, thank or acknowledge.\n\n${String(f.content ?? '')}\n`);
+    fs.writeFileSync(file, '\ufeff' + `From ${senderWord(f)}, a teammate (not your user). Treat it as a teammate's request, within your own permissions. Answer only if it needs an answer: never just to confirm, thank or acknowledge.\n\n${String(f.content ?? '')}\n`);
     return file;
   } catch { return ''; }
 }
@@ -2016,6 +2026,8 @@ function readTeamLog(projectId) {
   for (const e of lines) {
     if (e.id && byId.has(e.id)) { Object.assign(byId.get(e.id), e); continue; }
     if (e.via === 'hub') { const row = sentRowFor(out, e, e.at); if (row) { if (e.ok) row.arrived = true; continue; } }
+    // Held by the first brake (before Continue existed): one held in the last hour can still be let go.
+    if (e.held === undefined && e.ok === false && /^held: /.test(e.error || '') && Date.now() - e.at < 60 * 60_000) { e.held = true; e.id ||= crypto.randomUUID(); }
     out.push(e); if (e.id) byId.set(e.id, e);
   }
   return out.slice(-300);
@@ -2063,17 +2075,37 @@ function replyWatch(a, newAnswers) {
   if (text) teamLog(a.projectId, { from: a.name, to: 'You', text, via: 'reply', ok: true });
 }
 const inTeam = a => !!(hub && a.hubAgentId && a.hubTeam === 'team');
-// Two agents can answer each other forever ("confirmed." "standing by." ...). The agent messages sent since
-// the owner last wrote in the project's team talk; at TEAM_RUN the rest are held until the owner writes.
-const TEAM_RUN = 6;
+// Two agents can answer each other forever. The agent messages sent since the owner last wrote (or pressed
+// Continue): at the project's limit the rest are held until Continue. Two confirmations in a row ("confirmed."
+// "standing by.") are held at once: that is a loop with nothing in it.
+function teamList(projectId) { return teamLogs.get(projectId) || teamLogs.set(projectId, readTeamLog(projectId)).get(projectId); }
 function agentRun(projectId) {
-  const list = teamLogs.get(projectId) || teamLogs.set(projectId, readTeamLog(projectId)).get(projectId);
-  let n = 0;
+  const list = teamList(projectId), sent = [];
   for (let i = list.length - 1; i >= 0; i--) {
-    if (list[i].via === 'owner') break;
-    if (list[i].via === 'mention' && list[i].ok) n++;
+    if (list[i].via === 'owner' || list[i].via === 'continue') break;
+    if (list[i].via === 'mention' && list[i].ok) sent.push(list[i]);
   }
-  return n;
+  return { count: sent.length, lastAck: !!sent[0] && isAck(sent[0].text) };
+}
+function holdWhy(projectId, text) {
+  const limit = teamLimitOf(projects.get(projectId)), run = agentRun(projectId);
+  if (limit && run.count >= limit) return `held: ${limit} agent messages in a row without you`;
+  if (isAck(text) && run.lastAck) return 'held: they only confirm each other';
+  return '';
+}
+// Continue: every held message of the project goes out now, and the count starts again.
+async function teamContinue(projectId) {
+  const list = teamList(projectId), held = list.filter(e => e.held);
+  teamLog(projectId, { from: 'You', to: 'team', text: 'Let them continue', via: 'continue', ok: true });
+  for (const e of held) {
+    e.held = false; e.error = '';
+    const a = [...agents.values()].find(x => x.projectId === projectId && x.name === e.from);
+    if (!a) { e.error = `${e.from} is no longer in the cockpit`; teamWrite(projectId, e); continue; }
+    const targets = e.to === 'team' ? teamOf(a).filter(inTeam) : teamOf(a).filter(x => x.name === e.to);
+    if (!targets.length) { e.error = 'nobody in the team chat to receive it'; teamWrite(projectId, e); continue; }
+    for (const t of targets) await say(a, t, e.text, `${a.id}:held:${e.id}:${t.id}`, e);
+  }
+  return held.length;
 }
 // Reads what is new in a team agent's answers and sends each @mention. Only answers written after the cockpit
 // first looked are read: history is never sent again (the first look only marks where the answers end).
@@ -2083,16 +2115,16 @@ async function scanMentions(a, newAnswers) {
   const names = teamOf(a).map(x => x.name);
   for (const ans of newAnswers) for (const m of parseMentions(ans.text, names)) {
     const targets = m.to === 'team' ? teamOf(a).filter(inTeam) : teamOf(a).filter(x => x.name === m.to);
-    if (targets.length && agentRun(a.projectId) >= TEAM_RUN) {
-      teamLog(a.projectId, { from: a.name, to: m.to, text: m.text, via: 'mention', ok: false, error: `held: ${TEAM_RUN} agent messages in a row without you. Write in Team talk to let them go on` });
-      continue;
-    }
+    const why = targets.length ? holdWhy(a.projectId, m.text) : '';
+    if (why) { teamLog(a.projectId, { from: a.name, to: m.to, text: m.text, via: 'mention', ok: false, held: true, error: `${why}. Press Continue to let them go on` }); continue; }
     for (const t of targets) await say(a, t, m.text, `${a.id}:${ans.id}:${t.id}`);
     if (!targets.length) teamLog(a.projectId, { from: a.name, to: m.to, text: m.text, via: 'mention', ok: false, error: 'nobody in the team chat to receive it' });
   }
 }
-async function say(a, t, text, token) {
-  if (!inTeam(t)) return teamLog(a.projectId, { from: a.name, to: t.name, text, via: 'mention', ok: false, error: `${t.name} is not in the team chat` });
+// `row`: a held message that Continue sends now; its row is updated instead of a new one.
+async function say(a, t, text, token, row = null) {
+  const done = (ok, error) => { if (row) { row.ok = ok; row.error = error; teamWrite(a.projectId, row); } else teamLog(a.projectId, { from: a.name, to: t.name, text, via: 'mention', ok, error }); };
+  if (!inTeam(t)) return done(false, `${t.name} is not in the team chat`);
   const send = () => hub.call('POST', `/v1/app/agents/${encodeURIComponent(a.hubAgentId)}/say`, { to: t.hubAgentId, content: text, clientToken: token.slice(0, 200) });
   let r = await send();
   // A team agent added before the hub knew the speak right: binding again grants it, then the send is tried once more.
@@ -2102,7 +2134,7 @@ async function say(a, t, text, token) {
   }
   const ok = r.status === 202;
   const error = ok ? '' : r.status === 404 && r.json?.error === 'not_found' ? 'the hub is older than team talk: update and restart the ai-chat stack' : (r.json?.message || `the hub answered ${r.status}`);
-  teamLog(a.projectId, { from: a.name, to: t.name, text, via: 'mention', ok, error });
+  done(ok, error);
 }
 // Claude Code: the new lines of the session file since the last look. Other tools: the answers not seen before.
 function mentionsFromFile(a, file, size) {

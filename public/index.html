@@ -311,6 +311,11 @@ a.artlink svg{width:14px;height:14px;flex:none}
 .talk{display:flex;flex-direction:column;gap:8px;max-width:860px;padding:4px 2px}
 .talk-row{border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--surface)}
 .talk-row.failed{border-color:color-mix(in srgb,var(--fail) 45%,var(--line))}
+.talk-row.held{border-color:color-mix(in srgb,var(--need) 60%,var(--line))}
+.talk-held{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;color:var(--need);font-weight:600;font-size:.85rem}
+.talk-mark{align-self:center;font-size:.75rem;color:var(--ink-3);padding:2px 0}
+.talk-limit{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 16px 0;font-size:.8rem;color:var(--ink-2)}
+.talk-limit select{border:1px solid var(--line);border-radius:7px;background:var(--surface);padding:3px 6px}
 .talk-head{font-size:.85rem;margin-bottom:4px}
 .talk-text{white-space:pre-wrap;word-break:break-word}
 .it{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 12px}
@@ -1535,12 +1540,17 @@ function whereText(a) {
 function viewTalk() {
   const p = curProject();
   const list = h('div', { class: 'talk', role: 'log', 'aria-live': 'polite' }, h('span', { class: 'sub', text: 'Loading…' }));
-  const row = e => h('div', { class: 'talk-row' + (e.ok === false ? ' failed' : '') },
+  const goOn = async btn => { btn.disabled = true; try { await api('POST', '/api/team/continue', { project: p.id }); } catch (x) { toast(x.message); btn.disabled = false; } };
+  const row = e => e.via === 'continue'
+    ? h('div', { class: 'talk-mark', text: `You let them continue · ${new Date(e.at).toLocaleTimeString()}` })
+    : h('div', { class: 'talk-row' + (e.held ? ' held' : e.ok === false ? ' failed' : '') },
     h('div', { class: 'talk-head' },
       h('b', { text: e.from || '?' }), h('span', { class: 'hint', text: ' → ' }), h('b', { text: e.to === 'team' ? 'everyone' : (e.to || '?') }),
       h('span', { class: 'hint', text: `  ·  ${new Date(e.at).toLocaleTimeString()}${e.via === 'hub' || e.arrived ? '  ·  arrived' : ''}` })),
     h('div', { class: 'talk-text', text: e.text || '' }),
-    e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null);
+    e.held ? h('div', { class: 'talk-held' }, h('span', { text: 'Waiting for you: ' + e.error.replace(/^held: /, '').replace(/\. (Press Continue|Write in Team talk).*$/, '') + '.' }),
+      h('button', { class: 'btn sm primary', type: 'button', text: 'Let them continue', onclick: ev => goOn(ev.currentTarget) }))
+    : e.ok === false && e.error ? h('div', { class: 'err', text: 'Not delivered: ' + e.error }) : null);
   const paint = entries => {
     list.replaceChildren(...(entries.length ? entries.map(row) : [h('span', { class: 'sub', text: 'No team talk yet. An agent reaches a teammate by starting a paragraph of its answer with @Name; you can write here with @Name or @team.' })]));
     requestAnimationFrame(() => { const sc = list.closest('.talk-pane'); if (sc) sc.scrollTop = sc.scrollHeight; });
@@ -1567,11 +1577,14 @@ function viewTalk() {
       } catch (x) { toast(x.message); return false; }
     },
   });
+  const limit = h('select', { 'aria-label': 'Agent messages in a row before Continue', onchange: e => api('POST', `/api/projects/${p.id}`, { teamLimit: Number(e.target.value) }).catch(x => toast(x.message)) },
+    [10, 30, 60, 100, 0].map(n => h('option', { value: String(n), text: n ? `${n} messages` : 'no limit', selected: (p.teamLimit ?? 30) === n })));
+  const limitRow = h('label', { class: 'talk-limit' }, 'Agents may talk ', limit, ' in a row, then wait for my Continue');
   const hubNote = S.hub && S.hub.state === 'connected' ? null
     : h('span', { class: 'hint', text: 'The Agent Hub is not connected, so agents cannot reach each other with @Name right now. What you write here still goes to their windows.' });
   return h('div', { class: 'talk-view' }, h('div', { class: 'pane talk-pane' }, h('h2', { text: `Team talk · ${p.name}` }),
     h('span', { class: 'sub', text: `Agents: ${names.join(', ') || 'none'}. Each @Name paragraph an agent writes is delivered to that teammate.` }),
-    hubNote, list), form);
+    hubNote, list), limitRow, form);
 }
 function viewTeam() {
   const p = curProject(); const picked = new Set(); const list = h('div', { class: 'list' });
@@ -1759,6 +1772,12 @@ function connect() {
     const ev = JSON.parse(m.data);
     if (ev.t === 'hub') { S.hub = ev.hub; renderBar(); }
     if (ev.t === 'team' && els.talkAdd) els.talkAdd(ev.projectId, ev.entry);
+    if (ev.t === 'team' && ev.entry && ev.entry.held && !S.heldSeen?.has(ev.entry.id)) {
+      (S.heldSeen ||= new Set()).add(ev.entry.id);
+      const pn = (S.projects.find(x => x.id === ev.projectId) || {}).name || '';
+      toast(`${ev.entry.from} → ${ev.entry.to} waits for your Continue in Team talk${pn ? ' (' + pn + ')' : ''}.`);
+      if ('Notification' in window && Notification.permission === 'granted') { try { new Notification('Team talk waits for you', { body: `${ev.entry.from} → ${ev.entry.to}: ${ev.entry.text.slice(0, 120)}`, tag: 'held-' + ev.projectId }); } catch {} }
+    }
     if (ev.t === 'agent') onAgent(ev.agent);
     else if (ev.t === 'item') upsertItem(ev.agentId, ev.item);
     else if (ev.t === 'delta') onDelta(ev.agentId, ev.id, ev.text);
