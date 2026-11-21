@@ -1455,7 +1455,7 @@ const routes = {
   // What the phone's microphone did, step by step, written to the log (a phone has no console to look at).
   'POST /api/mic-log': async (req, res) => {
     const b = await readBody(req).catch(() => ({}));
-    console.log(`Phone mic: ${String(b.step || '').slice(0, 40)} ${String(b.detail || '').replace(/s+/g, ' ').slice(0, 300)}`);
+    console.log(`Phone mic: ${String(b.step || '').slice(0, 40)} ${String(b.detail || '').replace(/\s+/g, ' ').slice(0, 300)}`);
     json(res, 200, { ok: true });
   },
   // A project's team talk (@mentions and team messages), newest last.
