@@ -13,6 +13,7 @@ import { listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk
 import { HARNESSES, HARNESS_LABELS } from './harnesses.mjs';
 import { hubConfig, createHubClient, deliveryText, outcomeFor, senderWord, messageIdOf } from './hub-client.mjs';
 import { listDirs, makeDir, places } from './dirs.mjs';
+import { helperRun, agentFor } from './oldchats.mjs';
 import { parseMentions, answerOfLine, teamHint, ownerMentions, ownPart, isAck } from './team.mjs';
 
 // Which tool runs an agent. Claude Code is the default; the others are read by harnesses.mjs.
@@ -1535,11 +1536,13 @@ const routes = {
       let list = []; try { list = await tool.sessions(dir || null); } catch (e) { return json(res, 200, { sessions: [], error: `${tool.label}: ${e.message}` }); }
       return json(res, 200, { sessions: list.slice(0, limit).map(s => ({ sessionId: s.sessionId, title: s.title, named: false, firstPrompt: s.title, cwd: s.cwd, cwdShort: shortPath(s.cwd), gitBranch: '', lastModified: s.lastModified, agent: inRoster.get(s.sessionId) || null, harness: tool.id, profile: s.profile })) });
     }
-    const list = await listSessions(dir ? { dir, limit } : { limit });
+    // Claude Code's own summary runs are left out; an older chat of an agent counts as that agent (agentFor).
+    const list = (await listSessions(dir ? { dir, limit } : { limit })).filter(s => !helperRun(s.firstPrompt));
+    const all = [...agents.values()];
     json(res, 200, { sessions: list.map(s => ({
       sessionId: s.sessionId, title: s.customTitle || s.summary || s.firstPrompt || '(untitled)', named: !!s.customTitle,
       firstPrompt: (s.firstPrompt || '').slice(0, 200), cwd: s.cwd || '', cwdShort: shortPath(s.cwd || ''), gitBranch: s.gitBranch || '',
-      lastModified: s.lastModified, agent: inRoster.get(s.sessionId) || null,
+      lastModified: s.lastModified, agent: agentFor(s, all, proj && proj.id) || null,
     })) });
   },
 
